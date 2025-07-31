@@ -15,9 +15,10 @@ const SELECT_TIMEOUT_USEC = 0;
 const CLIENT_READ_SIZE = 4096;
 const CLIENT_LINE_FEED = "\r\n";
 
+// TODO: format depending on ipv4 vs ipv6
 function client_socket_name($sock) {
     socket_getpeername($sock, $addr, $port);
-    return "$addr:$port";
+    return "[$addr]:$port";
 }
 
 class Message {
@@ -381,9 +382,10 @@ $server_sock = null;
 $retries = 0;
 while (true) {
     try {
-        $server_sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+        // TODO: support both ipv4 and ipv6
+        $server_sock = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
         socket_set_nonblock($server_sock);
-        socket_bind($server_sock, '127.0.0.1', LISTEN_PORT);
+        socket_bind($server_sock, '::1', LISTEN_PORT);
         socket_listen($server_sock, LISTEN_BACKLOG);
         break;
     } catch (\ErrorException $e) {
