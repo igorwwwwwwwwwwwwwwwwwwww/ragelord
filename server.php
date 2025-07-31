@@ -18,12 +18,12 @@ function client_socket_name($sock) {
     return "$addr:$port";
 }
 
-enum ClientState {
-    case IDLE;
-    case WAIT_READ;
-    case WAIT_WRITE;
-    case CLOSED;
-    case ERROR;
+enum ClientState : string {
+    case IDLE       = 'IDLE';
+    case WAIT_READ  = 'WAIT_READ';
+    case WAIT_WRITE = 'WAIT_WRITE';
+    case CLOSED     = 'CLOSED';
+    case ERROR      = 'ERROR';
 }
 
 class Client {
@@ -44,19 +44,23 @@ class Client {
     function fiber() {
         echo "{$this->name}: starting fiber\n";
 
-        while (true) {
-            $msg = $this->read();
-            echo "{$this->name}: got msg: $msg\n";
+        try {
+            while (true) {
+                $msg = $this->read();
+                echo "{$this->name}: got msg: $msg\n";
 
-            $this->write($msg);
-            echo "{$this->name}: wrote msg back\n";
+                $this->write($msg);
+                echo "{$this->name}: wrote msg back\n";
+            }
+        } catch (\Exception $e) {
+            echo "{$this->name}: ERROR: {$e->getMessage()}\n";
+            $this->close();
         }
     }
 
     function read() {
-        echo "read\n";
         if ($this->state !== ClientState::IDLE) {
-            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state));
+            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state->value));
         }
 
         // we already have a message buffered, short circuit
@@ -70,9 +74,8 @@ class Client {
     }
 
     function write($data) {
-        echo "write\n";
         if ($this->state !== ClientState::IDLE) {
-            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state));
+            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state->value));
         }
         $this->state = ClientState::WAIT_WRITE;
         $this->writebuf .= $data . CLIENT_LINE_FEED;;
@@ -80,9 +83,8 @@ class Client {
     }
 
     function serve_read() {
-        echo "serve_read\n";
         if ($this->state !== ClientState::WAIT_READ) {
-            throw new \RuntimeException(sprintf('invalid state, expected WAIT_READ, got: %s', $this->state));
+            throw new \RuntimeException(sprintf('invalid state, expected WAIT_READ, got: %s', $this->state->value));
         }
 
         $buf = null;
@@ -102,6 +104,12 @@ class Client {
         if ($msg !== null) {
             $this->state = ClientState::IDLE;
             $this->fiber->resume($msg);
+            return;
+        }
+
+        if (strlen($this->readbuf) >= CLIENT_READ_SIZE) {
+            $this->force_write_besteffort(sprintf("ERROR: max message size is %d bytes\n", CLIENT_READ_SIZE));
+            $this->fiber->throw(new \RuntimeException('max message size exceeded'));
         }
     }
 
@@ -115,7 +123,6 @@ class Client {
     }
 
     function serve_write() {
-        echo "serve_write\n";
         if ($this->state !== ClientState::WAIT_WRITE) {
             throw new \RuntimeException(sprintf('invalid state, expected WAIT_WRITE, got: %s', $this->state));
         }
@@ -138,10 +145,13 @@ class Client {
         }
     }
 
+    function force_write_besteffort($data) {
+        $n = socket_write($this->sock, $data);
+    }
+
     function close() {
         echo "close\n";
         $this->state = ClientState::CLOSED;
-        socket_write($this->sock, "bye\r\n");
         socket_close($this->sock);
     }
 }
