@@ -1,0 +1,45 @@
+        ██████  ██     ██     ██     ██    ██   ██   ██     ██
+       ██       ██     ██     ██     ██    ██   ██   ██     ██
+       ██  ███  █████  ██     ██     ██    ██   ██   ██     ██
+       ██   ██  ██     ██     ██     ██    ██   ██   ██     ██
+        ██████  ██     █████  █████  █████  ██████    ███████
+
+                  Xx_th3-rage-l0rd_xX - Minimal PHP IRC Server
+
+                       "Mess with the best, die like the rest."
+
+─────────────────────────────────────────────────────────────────────
+[+] Project:          Xx_th3-rage-l0rd_xX
+[+] Author:           The Ultimate PHP Hacker (You)
+[+] Version:          0.1 alpha
+[+] Language:         PHP
+[+] Platform:         Any with PHP 7+
+[+] Description:      Minimalist IRC server written in PHP
+                     with maximum 90s hacker edge.
+
+─────────────────────────────────────────────────────────────────────
+[+] Features:
+    - Basic IRC protocol support (RFC 1459)
+    - Unique nickname enforcement
+    - Channel join/part
+    - Private and channel messaging
+    - PING/PONG heartbeat
+    - Minimal dependencies, pure PHP
+
+─────────────────────────────────────────────────────────────────────
+[+] Usage:
+    1. Run the server on your PHP-enabled host
+    2. Connect using any IRC client (port 6667 default)
+    3. Join channels, chat, rage on.
+
+─────────────────────────────────────────────────────────────────────
+[+] Contact:
+    For bugs, suggestions, or more rage:
+    Email: rage-master@phphackers.net
+    IRC: #ragezone @ irc.ragephp.local
+
+─────────────────────────────────────────────────────────────────────
+         "Mess with the best, die like the rest." - Hackers (1995)
+─────────────────────────────────────────────────────────────────────
+
+████████████████████████████████████████████████████████████████████████
