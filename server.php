@@ -4,18 +4,133 @@ namespace ragelord;
 
 use Fiber;
 
+const SERVER_SOURCE = 'localhost';
+
 const LISTEN_PORT = 6667;
 const LISTEN_BACKLOG  = 512;
 
 const SELECT_TIMEOUT_SEC  = 10;
 const SELECT_TIMEOUT_USEC = 0;
 
-const CLIENT_READ_SIZE = 1024;
-const CLIENT_LINE_FEED = "\n"; // "\r\n"
+const CLIENT_READ_SIZE = 4096;
+const CLIENT_LINE_FEED = "\r\n";
 
 function client_socket_name($sock) {
     socket_getpeername($sock, $addr, $port);
     return "$addr:$port";
+}
+
+class Message {
+    function __construct(
+        public $cmd,
+        public $params,
+        public $src = [],
+        public $tags = [],
+    ) {}
+
+    function __toString() {
+        $out = '';
+
+        if ($this->tags) {
+            $parts = [];
+            foreach ($this->tags as $key => $val) {
+                $parts[] = "$key=$val";
+            }
+            $out .= '@';
+            $out .= implode(';', $parts);
+            $out .= ' ';
+        }
+
+        if ($this->src) {
+            $out .= ':';
+            $out .= $this->src;
+            $out .= ' ';
+        }
+
+        $out .= $this->cmd;
+        $out .= ' ';
+
+        for ($i = 0; $i < count($this->params); $i++) {
+            if ($i === count($this->params)-1) {
+                $out .= ':' . $this->params[$i];
+                break;
+            }
+            $out .= $this->params[$i];
+            $out .= ' ';
+        }
+
+        return $out;
+    }
+}
+
+function parse_msg($line) {
+    $i = 0;
+
+    //   <tags>          ::= <tag> [';' <tag>]*
+    //   <tag>           ::= <key> ['=' <escaped value>]
+    //   <key>           ::= [ <client_prefix> ] [ <vendor> '/' ] <sequence of letters, digits, hyphens (`-`)>
+    //   <client_prefix> ::= '+'
+    //   <escaped value> ::= <sequence of any characters except NUL, CR, LF, semicolon (`;`) and SPACE>
+    //   <vendor>        ::= <host>
+    $tags = [];
+    if ($line[$i] === '@') {
+        $tags_raw = '';
+        while ($line[$i] !== ' ') {
+            $tags .= $line[$i++];
+        }
+        while ($line[$i] === ' ') {
+            $i++;
+        }
+
+        foreach (explode(';', $tags_raw) as $tag_raw) {
+            [$key, $val] = explode('=', $tag_raw, 2);
+            $tags[$key] = $val;
+        }
+    }
+
+    //   source          ::=  <servername> / ( <nickname> [ "!" <user> ] [ "@" <host> ] )
+    //   nick            ::=  <any characters except NUL, CR, LF, chantype character, and SPACE> <possibly empty sequence of any characters except NUL, CR, LF, and SPACE>
+    //   user            ::=  <sequence of any characters except NUL, CR, LF, and SPACE>
+    $src = '';
+    if ($line[$i] === ':') {
+        while ($line[$i] !== ' ') {
+            $src .= $line[$i++];
+        }
+        while ($line[$i] === ' ') {
+            $i++;
+        }
+    }
+
+    //   command         ::=  letter* / 3digit
+    $cmd = '';
+    while ($line[$i] !== ' ') {
+        $cmd .= $line[$i++];
+    }
+    while ($line[$i] === ' ') {
+        $i++;
+    }
+
+    //   parameters      ::=  *( SPACE middle ) [ SPACE ":" trailing ]
+    //   nospcrlfcl      ::=  <sequence of any characters except NUL, CR, LF, colon (`:`) and SPACE>
+    //   middle          ::=  nospcrlfcl *( ":" / nospcrlfcl )
+    //   trailing        ::=  *( ":" / " " / nospcrlfcl )
+    $params = [];
+    while ($i < strlen($line) && $line[$i] !== ':') {
+        $param = '';
+        while ($i < strlen($line) && $line[$i] !== ' ') {
+            $param .= $line[$i++];
+        }
+        while ($i < strlen($line) && $line[$i] === ' ') {
+            $i++;
+        }
+        $params[] = $param;
+    }
+
+    if ($i < strlen($line) && $line[$i] === ':') {
+        $params[] = substr($line, $i+1);
+    }
+
+    return new Message($cmd, $params, $src, $tags);
 }
 
 enum ClientState : string {
@@ -44,18 +159,75 @@ class Client {
     function fiber() {
         echo "{$this->name}: starting fiber\n";
 
-        try {
-            while (true) {
-                $msg = $this->read();
-                echo "{$this->name}: got msg: $msg\n";
+        $pass = $nick = $user = null;
 
-                $this->write($msg);
-                echo "{$this->name}: wrote msg back\n";
+        try {
+            // TODO: implement proper capability negotiation
+            //       for now we just ignore CAP
+            $reg_cmds = ['CAP', 'PASS', 'NICK', 'USER'];
+            while (true) {
+                if ($nick && $user) {
+                    break;
+                }
+
+                $msg = $this->read_msg();
+                if (!in_array($msg->cmd, $reg_cmds)) {
+                    throw new \RuntimeException(sprintf('invalid cmd, expected one of %s, got: %s', json_encode($reg_cmds), $msg->cmd));
+                }
+
+                switch ($msg->cmd) {
+                    case 'PASS':
+                        $pass = $msg->params[0];
+                        break;
+                    case 'NICK':
+                        $nick = $msg->params[0];
+                        break;
+                    case 'USER':
+                        $user = $msg->params[0];
+                        break;
+                    case 'CAP':
+                        // ignore for now
+                        break;
+                }
+            }
+
+            // TODO: check if nick is available, change it if not
+
+            // https://modern.ircdocs.horse/#rplwelcome-001
+            $this->write_msg('001', [$nick, "Welcome to the rage Network, $nick"]);
+            $this->write_msg('002', [$nick, sprintf("Your host is rage, running version 0.0.1")]);
+            $this->write_msg('003', [$nick, "This server was created in the future"]);
+            $this->write_msg('004', [$nick, 'rage', '0.0.1', 'o', 'o']);
+            $this->write_msg('251', [$nick, "There are 0 users and 0 invisible on 1 servers"]);
+            $this->write_msg('255', [$nick, "I have 0 clients and 1 servers"]);
+
+            // LUSERS
+            $this->write_msg('005', [$nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
+
+            // MOTD
+            $this->write_msg('375', [$nick, '- <server> Message of the day - ']);
+            $this->write_msg('372', [$nick, 'moin']);
+            $this->write_msg('376', [$nick, 'End of /MOTD command.']);
+
+            while (true) {
+                $msg = $this->read_msg();
             }
         } catch (\Exception $e) {
-            echo "{$this->name}: ERROR: {$e->getMessage()}\n";
+            echo "{$this->name}: ERROR: {$e}\n";
             $this->close();
         }
+    }
+
+    function read_msg() {
+        return parse_msg($this->read());
+    }
+
+    function write_msg($cmd, $params) {
+        $this->write(new Message(
+            $cmd,
+            $params,
+            SERVER_SOURCE,
+        ));
     }
 
     function read() {
@@ -64,9 +236,9 @@ class Client {
         }
 
         // we already have a message buffered, short circuit
-        $msg = $this->readbuf_get_msg();
-        if ($msg !== null) {
-            return $msg;
+        $line = $this->readbuf_get_line();
+        if ($line !== null) {
+            return $line;
         }
 
         $this->state = ClientState::WAIT_READ;
@@ -100,23 +272,26 @@ class Client {
         }
 
         $this->readbuf .= $buf;
-        $msg = $this->readbuf_get_msg();
-        if ($msg !== null) {
+        $line = $this->readbuf_get_line();
+        // TODO: skip empty read
+        if ($line !== null) {
             $this->state = ClientState::IDLE;
-            $this->fiber->resume($msg);
+            $this->fiber->resume($line);
             return;
         }
 
         if (strlen($this->readbuf) >= CLIENT_READ_SIZE) {
+            // TODO: send numeric error code: https://modern.ircdocs.horse/#errinputtoolong-417
             $this->force_write_besteffort(sprintf("ERROR: max message size is %d bytes\n", CLIENT_READ_SIZE));
             $this->fiber->throw(new \RuntimeException('max message size exceeded'));
         }
     }
 
-    function readbuf_get_msg() {
+    function readbuf_get_line() {
         if (str_contains($this->readbuf, CLIENT_LINE_FEED)) {
-            [$msg, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
-            return $msg;
+            [$line, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
+            printf("%s < %s\n", $this->name, $line);
+            return $line;
         }
 
         return null;
@@ -138,6 +313,8 @@ class Client {
             return;
         }
 
+        printf("%s > %s\n", $this->name, rtrim(substr($this->writebuf, 0, $n)));
+
         $this->writebuf = substr($this->writebuf, $n);
         if ($this->writebuf === '') {
             $this->state = ClientState::IDLE;
@@ -157,7 +334,7 @@ class Client {
 }
 
 function schedule($clients, $read, $write) {
-    printf("schedule: read=%d write=%d\n", count($read), count($write));
+    // printf("schedule: read=%d write=%d\n", count($read), count($write));
 
     $deleted = [];
 
@@ -230,7 +407,7 @@ echo "ready\n";
 $clients = [];
 
 while (true) {
-    echo "loop\n";
+    // echo "loop\n";
     $client_socks_read = array_map(
         fn ($client) => $client->sock,
         array_filter(array_values($clients), fn ($client) => $client->state === ClientState::WAIT_READ),
