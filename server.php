@@ -47,6 +47,9 @@ class Client {
         while (true) {
             $msg = $this->read();
             echo "{$this->name}: got msg: $msg\n";
+
+            $this->write($msg);
+            echo "{$this->name}: wrote msg back\n";
         }
     }
 
@@ -72,7 +75,7 @@ class Client {
             throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state));
         }
         $this->state = ClientState::WAIT_WRITE;
-        $this->writebuf = $data;
+        $this->writebuf .= $data . CLIENT_LINE_FEED;;
         Fiber::suspend();
     }
 
@@ -115,6 +118,23 @@ class Client {
         echo "serve_write\n";
         if ($this->state !== ClientState::WAIT_WRITE) {
             throw new \RuntimeException(sprintf('invalid state, expected WAIT_WRITE, got: %s', $this->state));
+        }
+
+        $n = socket_write($this->sock, $this->writebuf);
+
+        if ($n === false) {
+            $this->state !== ClientState::ERROR;
+            throw new \RuntimeException(socket_strerror(socket_last_error()));
+        }
+        if ($n === 0) {
+            $this->close();
+            return;
+        }
+
+        $this->writebuf = substr($this->writebuf, $n);
+        if ($this->writebuf === '') {
+            $this->state = ClientState::IDLE;
+            $this->fiber->resume();
         }
     }
 
