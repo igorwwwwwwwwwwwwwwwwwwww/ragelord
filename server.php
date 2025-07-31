@@ -11,6 +11,7 @@ const SELECT_TIMEOUT_SEC  = 10;
 const SELECT_TIMEOUT_USEC = 0;
 
 const CLIENT_READ_SIZE = 1024;
+const CLIENT_LINE_FEED = "\n"; // "\r\n"
 
 function client_socket_name($sock) {
     socket_getpeername($sock, $addr, $port);
@@ -43,7 +44,10 @@ class Client {
     function fiber() {
         echo "{$this->name}: starting fiber\n";
 
-        $msg = $this->read();
+        while (true) {
+            $msg = $this->read();
+            echo "{$this->name}: got msg: $msg\n";
+        }
     }
 
     function read() {
@@ -51,8 +55,15 @@ class Client {
         if ($this->state !== ClientState::IDLE) {
             throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state));
         }
+
+        // we already have a message buffered, short circuit
+        $msg = $this->readbuf_get_msg();
+        if ($msg !== null) {
+            return $msg;
+        }
+
         $this->state = ClientState::WAIT_READ;
-        Fiber::suspend();
+        return Fiber::suspend();
     }
 
     function write($data) {
@@ -71,7 +82,9 @@ class Client {
             throw new \RuntimeException(sprintf('invalid state, expected WAIT_READ, got: %s', $this->state));
         }
 
-        $n = socket_recv($this->sock, $buf, CLIENT_READ_SIZE, MSG_DONTWAIT);
+        $buf = null;
+        $n = socket_recv($this->sock, $buf, CLIENT_READ_SIZE-strlen($this->readbuf), MSG_DONTWAIT);
+
         if ($n === false) {
             $this->state !== ClientState::ERROR;
             throw new \RuntimeException(socket_strerror(socket_last_error()));
@@ -80,6 +93,22 @@ class Client {
             $this->close();
             return;
         }
+
+        $this->readbuf .= $buf;
+        $msg = $this->readbuf_get_msg();
+        if ($msg !== null) {
+            $this->state = ClientState::IDLE;
+            $this->fiber->resume($msg);
+        }
+    }
+
+    function readbuf_get_msg() {
+        if (str_contains($this->readbuf, CLIENT_LINE_FEED)) {
+            [$msg, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
+            return $msg;
+        }
+
+        return null;
     }
 
     function serve_write() {
