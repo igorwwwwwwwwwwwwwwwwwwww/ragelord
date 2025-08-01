@@ -1,0 +1,22 @@
+<?php
+
+namespace ragelord;
+
+require 'protocol.php';
+require 'server.php';
+require 'signal.php';
+
+$sigbuf = new SignalBuffer();
+pcntl_async_signals(true);
+pcntl_signal(SIGINT, [$sigbuf, 'handler']);
+pcntl_signal(SIGTERM, [$sigbuf, 'handler']);
+
+set_error_handler(exception_error_handler(...));
+
+try {
+    $server_sock = create_server_socket6();
+    echo "ready\n";
+    server($server_sock, $sigbuf);
+} finally {
+    socket_close($server_sock);
+}
