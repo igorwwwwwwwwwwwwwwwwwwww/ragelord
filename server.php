@@ -2,136 +2,93 @@
 
 namespace ragelord;
 
-const LISTEN_PORT = 6667;
-const LISTEN_BACKLOG  = 512;
-
-const SELECT_TIMEOUT_SEC  = 10;
-const SELECT_TIMEOUT_USEC = 0;
-
-// TODO: format depending on ipv4 vs ipv6
-function client_socket_name($sock) {
-    socket_getpeername($sock, $addr, $port);
-    return "[$addr]:$port";
+class User {
+    function __construct(
+        public $name,
+        public $nick,
+    ) {}
 }
 
-function schedule($clients, $read, $write) {
-    // printf("schedule: read=%d write=%d\n", count($read), count($write));
+class Channel {
+    function __construct(
+        public $name,
+        public $topic = null,
+        public $members = [],
+        public $symbol = '=', // public
+    ) {}
 
-    $deleted = [];
-
-    foreach ($read as $sock) {
-        $name = client_socket_name($sock);
-        $client = $clients[$name];
-        if ($client->state === ClientState::WAIT_READ) {
-            $client->serve_read();
-        }
-
-        if ($client->state === ClientState::CLOSED || $client->state === ClientState::ERROR) {
-            $deleted[] = $client;
-        }
+    // TODO: membership flags, e.g. op
+    function join($user) {
+        $this->members[$user->nick] = $user;
     }
 
-    foreach ($write as $sock) {
-        $name = client_socket_name($sock);
-        $client = $clients[$name];
-        if ($client->state === ClientState::WAIT_WRITE) {
-            $client->serve_write();
+    function part($user) {
+        if (!isset($this->members[$user->nick])) {
+            throw new \RuntimeException(sprintf('cannot part: user %s is not a member of %s', $user->nick, $this->name));
         }
-
-        if ($client->state === ClientState::CLOSED || $client->state === ClientState::ERROR) {
-            $deleted[] = $client;
-        }
-    }
-
-    return $deleted;
-}
-
-function create_server_socket6($addr = '::1', $port = LISTEN_PORT) {
-    $retries = 0;
-    while (true) {
-        try {
-            // TODO: support both ipv4 and ipv6
-            $server_sock = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
-            socket_set_nonblock($server_sock);
-            socket_bind($server_sock, $addr, $port);
-            socket_listen($server_sock, LISTEN_BACKLOG);
-            return $server_sock;
-        } catch (\ErrorException $e) {
-            if (!str_contains($e->getMessage(), 'Address already in use')) {
-                throw $e;
-            }
-            if ($retries > 60) {
-                echo "retries exceeded\n";
-                throw $e;
-            }
-            if ($retries === 0) {
-                echo "waiting for port to become available...\n";
-            }
-            $retries++;
-            sleep(1);
-        }
+        unset($this->members[$user->nick]);
     }
 }
 
-function server($server_sock, $sigbuf) {
-    $clients = [];
+class ServerState {
+    function __construct(
+        public $users = [],
+        public $channels = [],
+    ) {}
 
-    while (true) {
-        // echo "loop\n";
-        foreach ($sigbuf->consume() as $signo) {
-            printf("received signal: %s\n", signo_name($signo));
-            switch ($signo) {
-                case SIGINT:
-                    // TODO: notify all clients before shutting down
-                    return;
-                case SIGTERM:
-                    return;
-            }
+    function register($username, $nick) {
+        if (isset($this->users[$nick])) {
+            throw new \RuntimeException('nick already exists');
+        }
+        $this->users[$nick] = new User($username, $nick);
+        return $this->users[$nick];
+    }
+
+    function unregister($user) {
+        if (!isset($this->users[$user->nick])) {
+            return;
         }
 
-        $client_socks_read = array_map(
-            fn ($client) => $client->sock,
-            array_filter(array_values($clients), fn ($client) => $client->state === ClientState::WAIT_READ),
-        );
-        $client_socks_write = array_map(
-            fn ($client) => $client->sock,
-            array_filter(array_values($clients), fn ($client) => $client->state === ClientState::WAIT_WRITE),
-        );
-
-        $read = array_merge([$server_sock], $client_socks_read);
-        $write = $client_socks_write;
-        $except = null;
-
-        $changed = 0;
-        try {
-            $changed = socket_select($read, $write, $except, SELECT_TIMEOUT_SEC, SELECT_TIMEOUT_USEC);
-        } catch (\ErrorException $e) {
-            if (!str_contains($e->getMessage(), 'Interrupted system call')) {
-                throw $e;
+        foreach ($this->channels as $channel) {
+            if (isset($channel->members[$user->nick])) {
+                $channel->part($user);
             }
         }
+        unset($this->users[$user->nick]);
+    }
 
-        if ($changed === false) {
-            throw new \RuntimeException(socket_strerror(socket_last_error()));
-        }
+    function join($user, $chan_name) {
+        $this->channels[$chan_name] ??= new Channel($chan_name);
+        $this->channels[$chan_name]->join($user);
+        return $this->channels[$chan_name];
+    }
 
-        if ($changed > 0) {
-            $first = array_key_first($read);
-            if ($first !== null && $read[$first] === $server_sock) {
-                array_shift($read);
+    function part($user, $chan_name) {
+        $this->channels[$chan_name]->part($user);
+    }
 
-                $client_sock = socket_accept($server_sock);
-                socket_set_nonblock($client_sock);
-                $name = client_socket_name($client_sock);
-
-                $clients[$name] = new Client($name, $client_sock);
-                $clients[$name]->start();
-            }
-
-            $deleted = schedule($clients, $read, $write);
-            foreach ($deleted as $client) {
-                unset($clients[$client->name]);
+    // TODO: more efficient mapping of channel membership
+    function part_all($user) {
+        foreach ($this->channels as $channel) {
+            if (isset($channel->members[$user->nick])) {
+                $channel->part($user);
             }
         }
+    }
+
+    function privmsg($user, $target, $text) {
+        if (!isset($this->users[$target])) {
+            throw new \RuntimeException(sprintf('no such user: %s', $target));
+        }
+
+        // TODO: enqueue to target user buffer
+    }
+
+    function privmsg_channel($user, $chan_name, $text) {
+        if (!isset($this->channels[$chan_name])) {
+            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
+        }
+
+        // TODO: enqueue to buffer of all channel members
     }
 }

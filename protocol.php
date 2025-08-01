@@ -137,6 +137,7 @@ class Client {
     function __construct(
         public $name,
         public $sock,
+        public ServerState $server,
         public ClientState $state = CLientState::IDLE,
         public $readbuf = '',
         public $writebuf = '',
@@ -151,30 +152,30 @@ class Client {
     function fiber() {
         echo "{$this->name} starting fiber\n";
 
-        $pass = $nick = $user = null;
-
         try {
+            $username = $password = $nick = null;
+
             while (true) {
-                if ($nick && $user) {
+                if ($username && $nick) {
                     break;
                 }
 
                 $msg = $this->read_msg();
                 switch ($msg->cmd) {
+                    case 'USER':
+                        //      Command: USER
+                        //   Parameters: <username> 0 * <realname>
+                        $username = $msg->params[0];
+                        break;
                     case 'PASS':
                         //      Command: PASS
                         //   Parameters: <password>
-                        $pass = $msg->params[0];
+                        $password = $msg->params[0];
                         break;
                     case 'NICK':
                         //      Command: NICK
                         //   Parameters: <nickname>
                         $nick = $msg->params[0];
-                        break;
-                    case 'USER':
-                        //      Command: USER
-                        //   Parameters: <username> 0 * <realname>
-                        $user = $msg->params[0];
                         break;
                     case 'CAP':
                         // TODO: implement proper capability negotiation
@@ -185,26 +186,28 @@ class Client {
                 }
             }
 
+            $user = $this->server->register($username, $nick);
+
             // TODO: NICK: check if nick is available, adjust it if not
             // TODO: NICK: allow nick to change
             // TODO: USER: implement realname
             // TODO: various numeric error replies for all of these
 
             // https://modern.ircdocs.horse/#rplwelcome-001
-            $this->write_msg('001', [$nick, "Welcome to the rage Network, $nick"]);
-            $this->write_msg('002', [$nick, sprintf("Your host is rage, running version 0.0.1")]);
-            $this->write_msg('003', [$nick, "This server was created in the future"]);
-            $this->write_msg('004', [$nick, 'rage', '0.0.1', 'o', 'o']);
-            $this->write_msg('251', [$nick, "There are 0 users and 0 invisible on 1 servers"]);
-            $this->write_msg('255', [$nick, "I have 0 clients and 1 servers"]);
+            $this->write_msg('001', [$user->nick, "Welcome to the rage Network, {$user->nick}"]);
+            $this->write_msg('002', [$user->nick, sprintf("Your host is rage, running version 0.0.1")]);
+            $this->write_msg('003', [$user->nick, "This server was created in the future"]);
+            $this->write_msg('004', [$user->nick, 'rage', '0.0.1', 'o', 'o']);
+            $this->write_msg('251', [$user->nick, "There are 0 users and 0 invisible on 1 servers"]);
+            $this->write_msg('255', [$user->nick, "I have 0 clients and 1 servers"]);
 
             // LUSERS
-            $this->write_msg('005', [$nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
+            $this->write_msg('005', [$user->nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
 
             // MOTD
-            $this->write_msg('375', [$nick, '- <server> Message of the day - ']);
-            $this->write_msg('372', [$nick, 'moin']);
-            $this->write_msg('376', [$nick, 'End of /MOTD command.']);
+            $this->write_msg('375', [$user->nick, '- <server> Message of the day - ']);
+            $this->write_msg('372', [$user->nick, 'moin']);
+            $this->write_msg('376', [$user->nick, 'End of /MOTD command.']);
 
             // TODO: unimplemented: OPER
 
@@ -214,14 +217,64 @@ class Client {
                     case 'PING':
                         //      Command: PING
                         //   Parameters: <token>
-                        $this->write_msg('PONG', [$nick, $msg->params[0] ?? null]);
+                        $this->write_msg('PONG', [$user->nick, $msg->params[0] ?? null]);
                         break;
                     case 'QUIT':
                         //     Command: QUIT
                         //  Parameters: [<reason>]
-                        $this->write_msg('ERROR', [$nick, $msg->params[0] ?? null]);
+                        $this->write_msg('ERROR', [$user->nick, $msg->params[0] ?? null]);
                         $this->close();
                         return;
+                    case 'JOIN':
+                        //      Command: JOIN
+                        //   Parameters: <channel>{,<channel>} [<key>{,<key>}]
+                        //   Alt Params: 0
+                        if ($msg->params === ['0']) {
+                            $this->server->part_all($user);
+                            // TODO: send part responses for each parted channel
+                            break;
+                        }
+                        $channels = explode(',', $msg->params[0] ?? '');
+                        $keys = explode(',', $msg->params[1] ?? '');
+                        $chankeys = array_combine($channels, $keys);
+                        foreach ($chankeys as $chan_name => $key) {
+                            // TODO: handle key param
+                            $channel = $this->server->join($user, $chan_name);
+                            $this->write_msg('JOIN', [$user->nick, $channel->name]);
+                            if ($channel->topic) {
+                                $this->write_msg('332', [$user->nick, $channel->name, $channel->topic]);
+                            }
+                            foreach ($channel->members as $member) {
+                                $this->write_msg('332', [$user->nick, $channel->symbol, $channel->name, $member->nick]);
+                            }
+                            $this->write_msg('332', [$user->nick, $channel->symbol, 'End of /NAMES list']);
+                        }
+                        break;
+                    case 'PART':
+                        //      Command: PART
+                        //   Parameters: <channel>{,<channel>} [<reason>]
+                        $channels = explode(',', $msg->params[0] ?? '');
+                        $reason = $msg->params[1] ?? null;
+                        foreach ($channels as $chan_name) {
+                            $this->server->part($chan_name);
+                            $this->write_msg('PART', [$chan_name, $reason]);
+                        }
+                        return;
+                    case 'PRIVMSG':
+                        //      Command: PRIVMSG
+                        //   Parameters: <target>{,<target>} <text to be sent>
+                        $targets = explode(',', $msg->params[0] ?? '');
+                        $text = $msg->params[1];
+                        foreach ($targets as $target) {
+                            if ($target[0] === '#') {
+                                $this->server->privmsg_channel($user, $target, $text);
+                            } else {
+                                $this->server->privmsg($user, $target, $text);
+                            }
+                        }
+                        return;
+                    // TODO: TOPIC, NAMES, LIST, INVITE, KICK
+                    // MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
                     default:
                         $this->write_msg('ERROR', ["unsupported command {$msg->cmd}"]);
                         $this->close();
@@ -232,6 +285,10 @@ class Client {
             echo "{$this->name}: ERROR: {$e}\n";
             $this->write_msg('ERROR', [$e->getMessage()]);
             $this->close();
+        } finally {
+            if ($user) {
+                $this->server->unregister($user);
+            }
         }
     }
 
@@ -264,6 +321,12 @@ class Client {
     }
 
     // fiber-enabled
+    // TODO: implement non-fiberous version of this.
+    //       perhaps an io object and a fiberio wrapper that blocks via suspend.
+    //       we could also create a separate "inbox" buffer abstraction that the
+    //         client must itself consume and then write to the socket.
+    //       so that we can buffer the firehose of message delivery.
+    //       we also need a maximum write buffer size to handle slow clients.
     function write($data) {
         if ($this->state !== ClientState::IDLE) {
             throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state->value));
