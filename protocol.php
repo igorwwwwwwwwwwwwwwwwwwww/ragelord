@@ -247,9 +247,9 @@ class Client {
                                 $this->write_msg('332', [$user->nick, $channel->name, $channel->topic]);
                             }
                             foreach ($channel->members as $member) {
-                                $this->write_msg('332', [$user->nick, $channel->symbol, $channel->name, $member->nick]);
+                                $this->write_msg('353', [$user->nick, $channel->symbol, $channel->name, $member->nick]);
                             }
-                            $this->write_msg('332', [$user->nick, $channel->symbol, 'End of /NAMES list']);
+                            $this->write_msg('366', [$user->nick, $channel->name, 'End of /NAMES list']);
                         }
                         break;
                     case 'PART':
@@ -258,8 +258,20 @@ class Client {
                         $channels = explode(',', $msg->params[0] ?? '');
                         $reason = $msg->params[1] ?? null;
                         foreach ($channels as $chan_name) {
-                            $this->server->part($chan_name);
-                            $this->write_msg('PART', [$chan_name, $reason]);
+                            $this->server->part($user, $chan_name, $reason);
+                            $this->write_msg('PART', [$user->nick, $chan_name, $reason]);
+                        }
+                        break;
+                    case 'TOPIC':
+                        //      Command: TOPIC
+                        //   Parameters: <channel> [<topic>]
+                        $chan_name = $msg->params[0];
+                        $topic = $msg->params[1] ?? null;
+                        $topic = $this->server->topic($chan_name, $topic);
+                        if ($topic) {
+                            $this->write_msg('332', [$user->nick, $chan_name, $topic]);
+                        } else {
+                            $this->write_msg('331', [$user->nick, $chan_name]);
                         }
                         break;
                     case 'PRIVMSG':
@@ -268,15 +280,19 @@ class Client {
                         $targets = explode(',', $msg->params[0] ?? '');
                         $text = $msg->params[1];
                         foreach ($targets as $target) {
-                            if ($target[0] === '#') {
+                            if ($target[0] === '#' || $target[0] === '&') {
                                 $this->server->privmsg_channel($user, $target, $text);
                             } else {
                                 $this->server->privmsg($user, $target, $text);
                             }
                         }
                         break;
+                    // TODO: NOTICE
                     // TODO: TOPIC, NAMES, LIST, INVITE, KICK
-                    // MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
+                    // TODO: MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
+                    // TODO: WHO, WHOIS, WHOWAS
+                    // TODO: KILL, REHASH, RESTART, SQUIT
+                    // TODO: AWAY, LINKS, USERHOST, WALLOPS
                     default:
                         throw new \RuntimeException("unsupported command {$msg->cmd}");
                 }

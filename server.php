@@ -20,14 +20,29 @@ class Channel {
 
     // TODO: membership flags, e.g. op
     function join($user) {
+        foreach ($this->members as $member) {
+            $member->client->write_msg_async('JOIN', [$this->name], $user->nick);
+        }
+
         $this->members[$user->nick] = $user;
     }
 
-    function part($user) {
+    function part($user, $reason) {
         if (!isset($this->members[$user->nick])) {
             throw new \RuntimeException(sprintf('cannot part: user %s is not a member of %s', $user->nick, $this->name));
         }
         unset($this->members[$user->nick]);
+
+        foreach ($this->members as $member) {
+            $member->client->write_msg_async('PART', [$this->name, $reason], $user->nick);
+        }
+    }
+
+    function topic($topic) {
+        if ($topic !== null) {
+            $this->topic = $topic;
+        }
+        return $this->topic;
     }
 }
 
@@ -64,17 +79,25 @@ class ServerState {
         return $this->channels[$chan_name];
     }
 
-    function part($user, $chan_name) {
-        $this->channels[$chan_name]->part($user);
+    function part($user, $chan_name, $reason) {
+        $this->channels[$chan_name]->part($user, $reason);
     }
 
     // TODO: more efficient mapping of channel membership
-    function part_all($user) {
+    function part_all($user, $reason) {
         foreach ($this->channels as $channel) {
             if (isset($channel->members[$user->nick])) {
-                $channel->part($user);
+                $channel->part($user, $reason);
             }
         }
+    }
+
+    function topic($chan_name, $topic) {
+        if (!isset($this->channels[$chan_name])) {
+            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
+        }
+
+        return $this->channels[$chan_name]->topic($topic);
     }
 
     function privmsg($user, $target, $text) {
