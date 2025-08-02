@@ -22,11 +22,11 @@ function schedule($clients, $read, $write) {
     foreach ($read as $sock) {
         $name = client_socket_name($sock);
         $client = $clients[$name];
-        if ($client->state === ClientState::WAIT_READ) {
-            $client->serve_read();
+        if ($client->pending_read) {
+            $client->feed_readbuf();
         }
 
-        if ($client->state === ClientState::CLOSED || $client->state === ClientState::ERROR) {
+        if ($client->closed) {
             $deleted[] = $client;
         }
     }
@@ -34,11 +34,11 @@ function schedule($clients, $read, $write) {
     foreach ($write as $sock) {
         $name = client_socket_name($sock);
         $client = $clients[$name];
-        if ($client->state === ClientState::WAIT_WRITE) {
-            $client->serve_write();
+        if ($client->pending_write) {
+            $client->feed_writebuf();
         }
 
-        if ($client->state === ClientState::CLOSED || $client->state === ClientState::ERROR) {
+        if ($client->closed) {
             $deleted[] = $client;
         }
     }
@@ -91,11 +91,11 @@ function server($server_sock, $sigbuf, $server) {
 
         $client_socks_read = array_map(
             fn ($client) => $client->sock,
-            array_filter(array_values($clients), fn ($client) => $client->state === ClientState::WAIT_READ),
+            array_filter(array_values($clients), fn ($client) => $client->pending_read),
         );
         $client_socks_write = array_map(
             fn ($client) => $client->sock,
-            array_filter(array_values($clients), fn ($client) => $client->state === ClientState::WAIT_WRITE),
+            array_filter(array_values($clients), fn ($client) => $client->pending_write),
         );
 
         $read = array_merge([$server_sock], $client_socks_read);

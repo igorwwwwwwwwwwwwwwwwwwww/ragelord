@@ -8,6 +8,7 @@ const SERVER_SOURCE = 'localhost';
 
 const CLIENT_READ_SIZE = 4096;
 const CLIENT_LINE_FEED = "\r\n";
+const CLIENT_MAX_WRITE_BUF_SIZE = 8192;
 
 class Message {
     function __construct(
@@ -124,21 +125,15 @@ function parse_msg($line) {
     return new Message($cmd, $params, $src, $tags);
 }
 
-enum ClientState : string {
-    case IDLE       = 'IDLE';
-    case WAIT_READ  = 'WAIT_READ';
-    case WAIT_WRITE = 'WAIT_WRITE';
-    case CLOSING    = 'CLOSING';
-    case CLOSED     = 'CLOSED';
-    case ERROR      = 'ERROR';
-}
-
 class Client {
     function __construct(
         public $name,
         public $sock,
         public ServerState $server,
-        public ClientState $state = CLientState::IDLE,
+        public $pending_read = false,
+        public $pending_write = false,
+        public $pending_close = false,
+        public $closed = false,
         public $readbuf = '',
         public $writebuf = '',
         public $fiber = null,
@@ -276,9 +271,7 @@ class Client {
                     // TODO: TOPIC, NAMES, LIST, INVITE, KICK
                     // MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
                     default:
-                        $this->write_msg('ERROR', ["unsupported command {$msg->cmd}"]);
-                        $this->close();
-                        return;
+                        throw new \RuntimeException("unsupported command {$msg->cmd}");
                 }
             }
         } catch (\Exception $e) {
@@ -306,17 +299,21 @@ class Client {
 
     // fiber-enabled
     function read() {
-        if ($this->state !== ClientState::IDLE) {
-            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state->value));
+        if ($this->closed) {
+            throw new \RuntimeException('cannot read from closed socket');
+        }
+        if ($this->pending_close) {
+            throw new \RuntimeException('pending close, cannot read');
         }
 
         // we already have a message buffered, short circuit
         $line = $this->readbuf_get_line();
         if ($line !== null) {
+            $this->pending_read = false;
             return $line;
         }
 
-        $this->state = ClientState::WAIT_READ;
+        $this->pending_read = true;
         return Fiber::suspend();
     }
 
@@ -328,24 +325,40 @@ class Client {
     //       so that we can buffer the firehose of message delivery.
     //       we also need a maximum write buffer size to handle slow clients.
     function write($data) {
-        if ($this->state !== ClientState::IDLE) {
-            throw new \RuntimeException(sprintf('invalid state, expected IDLE, got: %s', $this->state->value));
+        if ($this->closed) {
+            throw new \RuntimeException('cannot read from closed socket');
         }
-        $this->state = ClientState::WAIT_WRITE;
-        $this->writebuf .= $data . CLIENT_LINE_FEED;;
+        // TODO: track individual writes, so we resume when this data was sent
+        //       but allow other code to continue writing to the buffer.
+        $this->write_async($data);
         return Fiber::suspend();
     }
 
-    function serve_read() {
-        if ($this->state !== ClientState::WAIT_READ) {
-            throw new \RuntimeException(sprintf('invalid state, expected WAIT_READ, got: %s', $this->state->value));
+    // non fiberous, we just queue data for write
+    // NOTE: caller must handle buf size exceeded
+    function write_async($data) {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot write to closed socket');
+        }
+        $this->pending_write = true;
+        $this->writebuf .= $data . CLIENT_LINE_FEED;
+        if (strlen($this->writebuf) > CLIENT_MAX_WRITE_BUF_SIZE) {
+            throw new \RuntimeException('max client write buf exceeded');
+        }
+    }
+
+    function feed_readbuf() {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot feed closed socket');
+        }
+        if (!$this->pending_read) {
+            throw new \RuntimeException('no pending read, will not feed buffers');
         }
 
         $buf = null;
         $n = socket_recv($this->sock, $buf, CLIENT_READ_SIZE-strlen($this->readbuf), MSG_DONTWAIT);
 
         if ($n === false) {
-            $this->state = ClientState::ERROR;
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
         if ($n === 0) {
@@ -357,7 +370,7 @@ class Client {
         $line = $this->readbuf_get_line();
         // TODO: skip empty line
         if ($line !== null) {
-            $this->state = ClientState::IDLE;
+            $this->pending_read = false;
             $this->fiber->resume($line);
             return;
         }
@@ -379,15 +392,17 @@ class Client {
         return null;
     }
 
-    function serve_write() {
-        if (!in_array($this->state, [ClientState::WAIT_WRITE, ClientState::CLOSING])) {
-            throw new \RuntimeException(sprintf('invalid state, expected WAIT_WRITE or CLOSING, got: %s', $this->state));
+    function feed_writebuf() {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot feed closed socket');
+        }
+        if (!$this->pending_write) {
+            throw new \RuntimeException('no pending write, will not feed buffers');
         }
 
         $n = socket_write($this->sock, $this->writebuf);
 
         if ($n === false) {
-            $this->state = ClientState::ERROR;
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
         if ($n === 0) {
@@ -400,32 +415,36 @@ class Client {
         $this->writebuf = substr($this->writebuf, $n);
 
         if ($this->writebuf === '') {
-            if ($this->state === ClientState::CLOSING) {
+            if ($this->pending_close) {
                 $this->close_immediately();
             } else {
-                $this->state = ClientState::IDLE;
+                $this->pending_write = false;
                 $this->fiber->resume();
             }
         }
     }
 
     function force_write_besteffort($data) {
+        if ($this->closed) {
+            return;
+        }
         $n = socket_write($this->sock, $data);
     }
 
     // fiber-enabled
     function close() {
         if ($this->writebuf) {
-            $this->state = ClientState::CLOSING;
+            $this->pending_close = true;
             return Fiber::suspend();
         }
 
-        $this->state = ClientState::CLOSED;
+        $this->pending_close = false;
+        $this->closed = true;
         socket_close($this->sock);
     }
 
     function close_immediately() {
-        $this->state = ClientState::CLOSED;
+        $this->closed = true;
         socket_close($this->sock);
     }
 }
