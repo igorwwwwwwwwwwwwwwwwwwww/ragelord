@@ -125,6 +125,12 @@ function parse_msg($line) {
     return new Message($cmd, $params, $src, $tags);
 }
 
+enum WaitState {
+    case IDLE;
+    case READ;
+    case WRITE;
+}
+
 class Client {
     function __construct(
         public $name,
@@ -136,6 +142,7 @@ class Client {
         public $closed = false,
         public $readbuf = '',
         public $writebuf = '',
+        public $waiting_on = WaitState::IDLE,
         public $fiber = null,
     ) {}
 
@@ -181,7 +188,7 @@ class Client {
                 }
             }
 
-            $user = $this->server->register($username, $nick);
+            $user = $this->server->register($username, $nick, $this);
 
             // TODO: NICK: check if nick is available, adjust it if not
             // TODO: NICK: allow nick to change
@@ -254,7 +261,7 @@ class Client {
                             $this->server->part($chan_name);
                             $this->write_msg('PART', [$chan_name, $reason]);
                         }
-                        return;
+                        break;
                     case 'PRIVMSG':
                         //      Command: PRIVMSG
                         //   Parameters: <target>{,<target>} <text to be sent>
@@ -267,7 +274,7 @@ class Client {
                                 $this->server->privmsg($user, $target, $text);
                             }
                         }
-                        return;
+                        break;
                     // TODO: TOPIC, NAMES, LIST, INVITE, KICK
                     // MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
                     default:
@@ -275,10 +282,11 @@ class Client {
                 }
             }
         } catch (\Exception $e) {
-            echo "{$this->name}: ERROR: {$e}\n";
+            echo "{$this->name} ERROR: {$e}\n";
             $this->write_msg('ERROR', [$e->getMessage()]);
             $this->close();
         } finally {
+            echo "{$this->name} client terminated\n";
             if ($user) {
                 $this->server->unregister($user);
             }
@@ -289,11 +297,19 @@ class Client {
         return parse_msg($this->read());
     }
 
-    function write_msg($cmd, $params) {
+    function write_msg($cmd, $params, $source = SERVER_SOURCE) {
         $this->write(new Message(
             $cmd,
             $params,
-            SERVER_SOURCE,
+            $source,
+        ));
+    }
+
+    function write_msg_async($cmd, $params, $source = SERVER_SOURCE) {
+        $this->write_async(new Message(
+            $cmd,
+            $params,
+            $source,
         ));
     }
 
@@ -314,7 +330,12 @@ class Client {
         }
 
         $this->pending_read = true;
-        return Fiber::suspend();
+        if (Fiber::getCurrent()) {
+            $this->waiting_on = WaitState::READ;
+            return Fiber::suspend();
+        }
+
+        throw new \RuntimeException('trying to read from outside of a fiber');
     }
 
     // fiber-enabled
@@ -325,17 +346,16 @@ class Client {
     //       so that we can buffer the firehose of message delivery.
     //       we also need a maximum write buffer size to handle slow clients.
     function write($data) {
-        if ($this->closed) {
-            throw new \RuntimeException('cannot read from closed socket');
-        }
         // TODO: track individual writes, so we resume when this data was sent
         //       but allow other code to continue writing to the buffer.
         $this->write_async($data);
-        return Fiber::suspend();
+        if (Fiber::getCurrent()) {
+            $this->waiting_on = WaitState::WRITE;
+            return Fiber::suspend();
+        }
     }
 
     // non fiberous, we just queue data for write
-    // NOTE: caller must handle buf size exceeded
     function write_async($data) {
         if ($this->closed) {
             throw new \RuntimeException('cannot write to closed socket');
@@ -343,16 +363,17 @@ class Client {
         $this->pending_write = true;
         $this->writebuf .= $data . CLIENT_LINE_FEED;
         if (strlen($this->writebuf) > CLIENT_MAX_WRITE_BUF_SIZE) {
-            throw new \RuntimeException('max client write buf exceeded');
+            echo "{$this->name} max write buf size exceeded, closing";
+            $this->close_immediately();
         }
     }
 
     function feed_readbuf() {
         if ($this->closed) {
-            throw new \RuntimeException('cannot feed closed socket');
+            throw new \RuntimeException('cannot feed readbuf on closed socket');
         }
         if (!$this->pending_read) {
-            throw new \RuntimeException('no pending read, will not feed buffers');
+            throw new \RuntimeException('no pending read, will not feed readbuf');
         }
 
         $buf = null;
@@ -371,7 +392,10 @@ class Client {
         // TODO: skip empty line
         if ($line !== null) {
             $this->pending_read = false;
-            $this->fiber->resume($line);
+            if ($this->fiber->isSuspended() && $this->waiting_on == WaitState::READ) {
+                $this->waiting_on = WaitState::IDLE;
+                $this->fiber->resume($line);
+            }
             return;
         }
 
@@ -392,12 +416,12 @@ class Client {
         return null;
     }
 
-    function feed_writebuf() {
+    function drain_writebuf() {
         if ($this->closed) {
-            throw new \RuntimeException('cannot feed closed socket');
+            throw new \RuntimeException('cannot drain writebuf on closed socket');
         }
         if (!$this->pending_write) {
-            throw new \RuntimeException('no pending write, will not feed buffers');
+            throw new \RuntimeException('no pending write, will not drain writebuf');
         }
 
         $n = socket_write($this->sock, $this->writebuf);
@@ -419,7 +443,10 @@ class Client {
                 $this->close_immediately();
             } else {
                 $this->pending_write = false;
-                $this->fiber->resume();
+                if ($this->fiber->isSuspended() && $this->waiting_on == WaitState::WRITE) {
+                    $this->waiting_on = WaitState::IDLE;
+                    $this->fiber->resume();
+                }
             }
         }
     }
@@ -435,7 +462,11 @@ class Client {
     function close() {
         if ($this->writebuf) {
             $this->pending_close = true;
-            return Fiber::suspend();
+            if (Fiber::getCurrent()) {
+                $this->waiting_on = WaitState::WRITE;
+                return Fiber::suspend();
+            }
+            return;
         }
 
         $this->pending_close = false;

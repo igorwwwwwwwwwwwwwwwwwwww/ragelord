@@ -35,7 +35,7 @@ function schedule($clients, $read, $write) {
         $name = client_socket_name($sock);
         $client = $clients[$name];
         if ($client->pending_write) {
-            $client->feed_writebuf();
+            $client->drain_writebuf();
         }
 
         if ($client->closed) {
@@ -86,6 +86,26 @@ function server($server_sock, $sigbuf, $server) {
                     return;
                 case SIGTERM:
                     return;
+                case SIGINFO:
+                    foreach ($clients as $client) {
+                        if (!$client->fiber->isStarted()) {
+                            printf("%s [not started]\n", $client->name);
+                            printf("\n");
+                        } else if ($client->fiber->isTerminated()) {
+                            printf("%s [terminated]\n", $client->name);
+                            printf("\n");
+                        } else {
+                            printf("%s\n", $client->name);
+                            $r = new \ReflectionFiber($client->fiber);
+                            foreach ($r->getTrace() as $i => $frame) {
+                                $args = array_map(fn ($arg) => var_export($arg, true), $frame['args']);
+                                printf("#%d %s:%d %s%s%s(%s)\n", $i, $frame['file'] ?? '', $frame['line'] ?? '', $frame['class'] ?? '', $frame['type'] ?? '', $frame['function'] ?? '', implode(', ', $args));
+                            }
+                            printf("\n");
+                        }
+                    }
+                    debug_print_backtrace();
+                    break;
             }
         }
 

@@ -6,6 +6,7 @@ class User {
     function __construct(
         public $name,
         public $nick,
+        public $client, // instead of client, pass something smaller, like a writer; maybe decouple this somehow
     ) {}
 }
 
@@ -36,11 +37,11 @@ class ServerState {
         public $channels = [],
     ) {}
 
-    function register($username, $nick) {
+    function register($username, $nick, $client) {
         if (isset($this->users[$nick])) {
             throw new \RuntimeException('nick already exists');
         }
-        $this->users[$nick] = new User($username, $nick);
+        $this->users[$nick] = new User($username, $nick, $client);
         return $this->users[$nick];
     }
 
@@ -81,7 +82,7 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such user: %s', $target));
         }
 
-        // TODO: enqueue to target user buffer
+        $this->users[$target]->client->write_msg_async('PRIVMSG', [$target->nick, $text], $user->nick);
     }
 
     function privmsg_channel($user, $chan_name, $text) {
@@ -89,6 +90,8 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
         }
 
-        // TODO: enqueue to buffer of all channel members
+        foreach ($this->channels[$chan_name]->members as $member) {
+            $member->client->write_msg_async('PRIVMSG', [$chan_name, $text], $user->nick);
+        }
     }
 }
