@@ -154,6 +154,8 @@ class Client {
     function fiber() {
         echo "{$this->name} starting fiber\n";
 
+        $user = null;
+
         try {
             $username = $password = $nick = null;
 
@@ -267,11 +269,17 @@ class Client {
                         //   Parameters: <channel> [<topic>]
                         $chan_name = $msg->params[0];
                         $topic = $msg->params[1] ?? null;
-                        $topic = $this->server->topic($chan_name, $topic);
-                        if ($topic) {
-                            $this->write_msg('332', [$user->nick, $chan_name, $topic]);
+                        if ($topic === null) {
+                            $topic = $this->server->get_topic($chan_name);
+                            // TODO: RPL_TOPICWHOTIME
+                            if ($topic) {
+                                $this->write_msg('332', [$user->nick, $chan_name, $topic]);
+                            } else {
+                                $this->write_msg('331', [$user->nick, $chan_name]);
+                            }
                         } else {
-                            $this->write_msg('331', [$user->nick, $chan_name]);
+                            // broadcast happens internally
+                            $this->server->set_topic($chan_name, $topic);
                         }
                         break;
                     case 'PRIVMSG':
@@ -299,8 +307,10 @@ class Client {
             }
         } catch (\Exception $e) {
             echo "{$this->name} ERROR: {$e}\n";
-            $this->write_msg('ERROR', [$e->getMessage()]);
-            $this->close();
+            if (!$this->closed) {
+                $this->write_msg('ERROR', [$e->getMessage()]);
+                $this->close();
+            }
         } finally {
             echo "{$this->name} client terminated\n";
             if ($user) {
@@ -400,6 +410,9 @@ class Client {
         }
         if ($n === 0) {
             $this->close_immediately();
+            if ($this->fiber->isSuspended()) {
+                $this->fiber->throw(new \RuntimeException('client disconnected'));
+            }
             return;
         }
 
@@ -447,6 +460,9 @@ class Client {
         }
         if ($n === 0) {
             $this->close_immediately();
+            if ($this->fiber->isSuspended()) {
+                $this->fiber->throw(new \RuntimeException('client disconnected'));
+            }
             return;
         }
 

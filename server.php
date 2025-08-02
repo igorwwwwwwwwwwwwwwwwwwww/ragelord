@@ -27,7 +27,7 @@ class Channel {
         $this->members[$user->nick] = $user;
     }
 
-    function part($user, $reason) {
+    function part($user, $reason = null) {
         if (!isset($this->members[$user->nick])) {
             throw new \RuntimeException(sprintf('cannot part: user %s is not a member of %s', $user->nick, $this->name));
         }
@@ -38,11 +38,16 @@ class Channel {
         }
     }
 
-    function topic($topic) {
-        if ($topic !== null) {
-            $this->topic = $topic;
+    function set_topic($topic) {
+        $this->topic = $topic;
+        foreach ($this->members as $member) {
+            // TODO: RPL_TOPICWHOTIME
+            if ($topic) {
+                $member->client->write_msg_async('332', [$member->nick, $this->name, $topic]);
+            } else {
+                $member->client->write_msg_async('331', [$member->nick, $this->name]);
+            }
         }
-        return $this->topic;
     }
 }
 
@@ -92,12 +97,20 @@ class ServerState {
         }
     }
 
-    function topic($chan_name, $topic) {
+    function get_topic($chan_name) {
         if (!isset($this->channels[$chan_name])) {
             throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
         }
 
-        return $this->channels[$chan_name]->topic($topic);
+        return $this->channels[$chan_name]->topic;
+    }
+
+    function set_topic($chan_name, $topic) {
+        if (!isset($this->channels[$chan_name])) {
+            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
+        }
+
+        $this->channels[$chan_name]->set_topic($topic);
     }
 
     function privmsg($user, $target, $text) {
