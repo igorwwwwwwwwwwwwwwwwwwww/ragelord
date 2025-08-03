@@ -2,15 +2,14 @@
 
 namespace ragelord;
 
+require 'socket.php';
 require 'server.php';
 require 'protocol.php';
-require 'socket.php';
+require 'sched.php';
+require 'sync/channel.php';
 require 'signal.php';
 
 set_error_handler(exception_error_handler(...));
-
-$server_sock = create_server_socket6();
-echo "ready\n";
 
 $sigbuf = new SignalBuffer();
 pcntl_async_signals(true);
@@ -18,12 +17,32 @@ pcntl_signal(SIGINT, [$sigbuf, 'handler']);
 pcntl_signal(SIGTERM, [$sigbuf, 'handler']);
 pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
 
-$server = new ServerState();
+// TODO: implement gracceful termination
+go(function () {
+    $server = new ServerState();;
+    $server_socks = [
+        listen_retry(fn () => listen4('127.0.0.1', 6667)),
+        listen_retry(fn () => listen6('::1', 6667)),
+    ];
+    echo "ready\n";
 
-try {
-    server($server_sock, $sigbuf, $server);
-} finally {
-    if ($server_sock) {
-        socket_close($server_sock);
+    foreach ($server_socks as $server_sock) {
+        go(function () use ($server, $server_sock) {
+            try {
+                while (true) {
+                    $sock = accept($server_sock);
+                    go(function () use ($server, $sock) {
+                        $name = client_socket_name($sock);
+                        $client = new Client($name, $sock, $server);
+                        go(fn () => $client->reader());
+                        go(fn () => $client->writer());
+                    });
+                }
+            } finally {
+                socket_close($server_sock);
+            }
+        });
     }
-}
+});
+
+event_loop($sigbuf);

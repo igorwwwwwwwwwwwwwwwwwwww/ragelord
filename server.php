@@ -14,7 +14,7 @@ class Channel {
     function __construct(
         public $name,
         public $topic = null,
-        public $members = [],
+        public $members = [], // SplObjecStorage set?
         public $symbol = '=', // public
     ) {}
 
@@ -124,6 +124,10 @@ class ServerState {
     function privmsg_channel($user, $chan_name, $text) {
         if (!isset($this->channels[$chan_name])) {
             throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
+        }
+
+        if (!in_array($user, $this->channels[$chan_name]->members)) {
+            throw new \RuntimeException(sprintf('user %s is not a member in channel: %s', $user->nick, $chan_name));
         }
 
         foreach ($this->channels[$chan_name]->members as $member) {

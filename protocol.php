@@ -125,33 +125,17 @@ function parse_msg($line) {
     return new Message($cmd, $params, $src, $tags);
 }
 
-enum WaitState {
-    case IDLE;
-    case READ;
-    case WRITE;
-}
-
 class Client {
     function __construct(
         public $name,
         public $sock,
         public ServerState $server,
-        public $pending_read = false,
-        public $pending_write = false,
-        public $pending_close = false,
         public $closed = false,
         public $readbuf = '',
-        public $writebuf = '',
-        public $waiting_on = WaitState::IDLE,
-        public $fiber = null,
+        public $writechan = new sync\Channel(),
     ) {}
 
-    function start() {
-        $this->fiber = new Fiber([$this, 'fiber']);
-        $this->fiber->start();
-    }
-
-    function fiber() {
+    function reader() {
         echo "{$this->name} starting fiber\n";
 
         $user = null;
@@ -319,8 +303,15 @@ class Client {
         }
     }
 
+    // TODO: handle socket close
+    function writer() {
+        while ($msg = $this->writechan->recv()) {
+            $this->write($msg);
+        }
+    }
+
     function read_msg() {
-        return parse_msg($this->read());
+        return parse_msg($this->read_line());
     }
 
     function write_msg($cmd, $params, $source = SERVER_SOURCE) {
@@ -339,174 +330,80 @@ class Client {
         ));
     }
 
-    // fiber-enabled
-    function read() {
+    function read_line() {
         if ($this->closed) {
             throw new \RuntimeException('cannot read from closed socket');
         }
-        if ($this->pending_close) {
-            throw new \RuntimeException('pending close, cannot read');
+
+        $len = CLIENT_READ_SIZE;
+        while (!str_contains($this->readbuf, CLIENT_LINE_FEED)) {
+            $buf = null;
+            $n = read($this->sock, $buf, $len);
+
+            if ($n === false) {
+                throw new \RuntimeException(socket_strerror(socket_last_error()));
+            }
+
+            if ($n === 0) {
+                // EOF
+                throw new \RuntimeException('socket closed');
+            }
+
+            $this->readbuf .= $buf;
+            $len -= $n;
+
+            if ($len <= 0) {
+                throw new \RuntimeException(sprintf('input line too long, must be under %d bytes', CLIENT_READ_SIZE));
+            }
         }
 
-        // we already have a message buffered, short circuit
-        $line = $this->readbuf_get_line();
-        if ($line !== null) {
-            $this->pending_read = false;
-            return $line;
-        }
-
-        $this->pending_read = true;
-        if (Fiber::getCurrent()) {
-            $this->waiting_on = WaitState::READ;
-            return Fiber::suspend();
-        }
-
-        throw new \RuntimeException('trying to read from outside of a fiber');
+        [$line, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
+        printf("%s < %s\n", $this->name, $line);
+        return $line;
     }
 
-    // fiber-enabled
-    // TODO: implement non-fiberous version of this.
-    //       perhaps an io object and a fiberio wrapper that blocks via suspend.
-    //       we could also create a separate "inbox" buffer abstraction that the
-    //         client must itself consume and then write to the socket.
-    //       so that we can buffer the firehose of message delivery.
-    //       we also need a maximum write buffer size to handle slow clients.
+    // TODO: write buffering? we kinda need it in order to be able
+    //         to enqueue writes from other fibers. unless we implement
+    //         some sort of channel where each client receives items
+    //         and then writes them to its own socket.
+    //       so the core loop for each client would be something like:
+    //         select
+    //           msg := <-read_line
+    //             parse_and_handle(msg)
+    //           msg := <-pending_write
+    //             write(msg)
+    //       that does make the clients more complex though.
+    //       could we create a separate fiber for writes? that could work.
+    //         that makes them fully async. and we can enforce max size there,
+    //         as long as we make sure the error propagates to the client.
     function write($data) {
-        // TODO: track individual writes, so we resume when this data was sent
-        //       but allow other code to continue writing to the buffer.
-        $this->write_async($data);
-        if (Fiber::getCurrent()) {
-            $this->waiting_on = WaitState::WRITE;
-            return Fiber::suspend();
+        $remaining = strlen($data);
+
+        while ($remaining > 0) {
+            $n = write($this->sock, $data);
+
+            if ($n === false) {
+                throw new \RuntimeException(socket_strerror(socket_last_error()));
+            }
+
+            if ($n === 0) {
+                // EOF
+                return null;
+            }
+
+            $remaining -= $n;
+            $data = substr($data, $n);
         }
     }
 
-    // non fiberous, we just queue data for write
     function write_async($data) {
         if ($this->closed) {
             throw new \RuntimeException('cannot write to closed socket');
         }
-        $this->pending_write = true;
-        $this->writebuf .= $data . CLIENT_LINE_FEED;
-        if (strlen($this->writebuf) > CLIENT_MAX_WRITE_BUF_SIZE) {
-            echo "{$this->name} max write buf size exceeded, closing";
-            $this->close_immediately();
-        }
+        $this->writechan->send($data . CLIENT_LINE_FEED);
     }
 
-    function feed_readbuf() {
-        if ($this->closed) {
-            throw new \RuntimeException('cannot feed readbuf on closed socket');
-        }
-        if (!$this->pending_read) {
-            throw new \RuntimeException('no pending read, will not feed readbuf');
-        }
-
-        $buf = null;
-        $n = socket_recv($this->sock, $buf, CLIENT_READ_SIZE-strlen($this->readbuf), MSG_DONTWAIT);
-
-        if ($n === false) {
-            throw new \RuntimeException(socket_strerror(socket_last_error()));
-        }
-        if ($n === 0) {
-            $this->close_immediately();
-            if ($this->fiber->isSuspended()) {
-                $this->fiber->throw(new \RuntimeException('client disconnected'));
-            }
-            return;
-        }
-
-        $this->readbuf .= $buf;
-        $line = $this->readbuf_get_line();
-        // TODO: skip empty line
-        if ($line !== null) {
-            $this->pending_read = false;
-            if ($this->fiber->isSuspended() && $this->waiting_on == WaitState::READ) {
-                $this->waiting_on = WaitState::IDLE;
-                $this->fiber->resume($line);
-            }
-            return;
-        }
-
-        if (strlen($this->readbuf) >= CLIENT_READ_SIZE) {
-            // TODO: send numeric error code: https://modern.ircdocs.horse/#errinputtoolong-417
-            $this->force_write_besteffort(sprintf("ERROR: max message size is %d bytes\n", CLIENT_READ_SIZE));
-            $this->fiber->throw(new \RuntimeException('max message size exceeded'));
-        }
-    }
-
-    function readbuf_get_line() {
-        if (str_contains($this->readbuf, CLIENT_LINE_FEED)) {
-            [$line, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
-            printf("%s < %s\n", $this->name, $line);
-            return $line;
-        }
-
-        return null;
-    }
-
-    function drain_writebuf() {
-        if ($this->closed) {
-            throw new \RuntimeException('cannot drain writebuf on closed socket');
-        }
-        if (!$this->pending_write) {
-            throw new \RuntimeException('no pending write, will not drain writebuf');
-        }
-
-        $n = socket_write($this->sock, $this->writebuf);
-
-        if ($n === false) {
-            throw new \RuntimeException(socket_strerror(socket_last_error()));
-        }
-        if ($n === 0) {
-            $this->close_immediately();
-            if ($this->fiber->isSuspended()) {
-                $this->fiber->throw(new \RuntimeException('client disconnected'));
-            }
-            return;
-        }
-
-        printf("%s > %s\n", $this->name, rtrim(substr($this->writebuf, 0, $n)));
-
-        $this->writebuf = substr($this->writebuf, $n);
-
-        if ($this->writebuf === '') {
-            if ($this->pending_close) {
-                $this->close_immediately();
-            } else {
-                $this->pending_write = false;
-                if ($this->fiber->isSuspended() && $this->waiting_on == WaitState::WRITE) {
-                    $this->waiting_on = WaitState::IDLE;
-                    $this->fiber->resume();
-                }
-            }
-        }
-    }
-
-    function force_write_besteffort($data) {
-        if ($this->closed) {
-            return;
-        }
-        $n = socket_write($this->sock, $data);
-    }
-
-    // fiber-enabled
     function close() {
-        if ($this->writebuf) {
-            $this->pending_close = true;
-            if (Fiber::getCurrent()) {
-                $this->waiting_on = WaitState::WRITE;
-                return Fiber::suspend();
-            }
-            return;
-        }
-
-        $this->pending_close = false;
-        $this->closed = true;
-        socket_close($this->sock);
-    }
-
-    function close_immediately() {
         $this->closed = true;
         socket_close($this->sock);
     }
