@@ -6,7 +6,7 @@ class User {
     function __construct(
         public $name,
         public $nick,
-        public $client, // instead of client, pass something smaller, like a writer; maybe decouple this somehow
+        public $sess, // instead of session, pass something smaller, like a writer; maybe decouple this somehow
     ) {}
 }
 
@@ -21,7 +21,7 @@ class Channel {
     // TODO: membership flags, e.g. op
     function join($user) {
         foreach ($this->members as $member) {
-            $member->client->write_msg('JOIN', [$this->name], $user->nick);
+            $member->sess->write_msg('JOIN', [$this->name], $user->nick);
         }
 
         $this->members[$user->nick] = $user;
@@ -34,7 +34,7 @@ class Channel {
         unset($this->members[$user->nick]);
 
         foreach ($this->members as $member) {
-            $member->client->write_msg('PART', [$this->name, $reason], $user->nick);
+            $member->sess->write_msg('PART', [$this->name, $reason], $user->nick);
         }
     }
 
@@ -43,9 +43,9 @@ class Channel {
         foreach ($this->members as $member) {
             // TODO: RPL_TOPICWHOTIME
             if ($topic) {
-                $member->client->write_msg('332', [$member->nick, $this->name, $topic]);
+                $member->sess->write_msg('332', [$member->nick, $this->name, $topic]);
             } else {
-                $member->client->write_msg('331', [$member->nick, $this->name]);
+                $member->sess->write_msg('331', [$member->nick, $this->name]);
             }
         }
     }
@@ -57,11 +57,11 @@ class ServerState {
         public $channels = [],
     ) {}
 
-    function register($username, $nick, $client) {
+    function register($username, $nick, $sess) {
         if (isset($this->users[$nick])) {
             throw new \RuntimeException('nick already exists');
         }
-        $this->users[$nick] = new User($username, $nick, $client);
+        $this->users[$nick] = new User($username, $nick, $sess);
         return $this->users[$nick];
     }
 
@@ -118,7 +118,7 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such user: %s', $target));
         }
 
-        $this->users[$target]->client->write_msg('PRIVMSG', [$target->nick, $text], $user->nick);
+        $this->users[$target]->sess->write_msg('PRIVMSG', [$target->nick, $text], $user->nick);
     }
 
     function privmsg_channel($user, $chan_name, $text) {
@@ -130,8 +130,10 @@ class ServerState {
             throw new \RuntimeException(sprintf('user %s is not a member in channel: %s', $user->nick, $chan_name));
         }
 
+        var_dump('broadcasting');
+
         foreach ($this->channels[$chan_name]->members as $member) {
-            $member->client->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
+            $member->sess->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
         }
     }
 }

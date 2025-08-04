@@ -7,7 +7,7 @@ require 'state.php';
 require 'proto.php';
 require 'server.php';
 require 'sched.php';
-require 'sync/channel.php';
+require 'sync/chan.php';
 require 'signal.php';
 
 set_error_handler(exception_error_handler(...));
@@ -72,4 +72,4 @@ go(function () use ($sigbuf) {
     });
 });
 
-event_loop($sigbuf);
+event_loop();

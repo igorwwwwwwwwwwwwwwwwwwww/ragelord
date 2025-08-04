@@ -100,7 +100,7 @@ function client_backtrace() {
     }
 }
 
-function event_loop($sigbuf) {
+function event_loop() {
     $clients = [];
 
     while (true) {
@@ -138,6 +138,9 @@ function event_loop($sigbuf) {
 
         // hrtime(true) returns nanos, but socket_select expects micros
         [$seconds, $micros] = time_from_nanos($select_timeout);
+
+        // var_dump('read', EngineState::$pending_read_waiter);
+        // var_dump('write', EngineState::$pending_write_waiter);
 
         $changed = 0;
         try {

@@ -10,7 +10,7 @@ use function ragelord\write;
 // note: we assume a single receiver
 // we cannot directly resume from a signal handler, so we create a socket pair indirection,
 //   because apparently that's ok.
-class Channel {
+class Chan {
     function __construct(
         public $buf = [],
         public $waiter = null,
@@ -31,6 +31,7 @@ class Channel {
         $this->notify();
     }
 
+    // TODO: iterator/generator
     function recv() {
         if ($this->buf) {
             return array_shift($this->buf);

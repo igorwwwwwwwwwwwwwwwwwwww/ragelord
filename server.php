@@ -17,7 +17,7 @@ class Session {
         public ServerState $server,
         public $closed = false,
         public $readbuf = '',
-        public $writech = new sync\Channel(),
+        public $writech = new sync\Chan(),
     ) {}
 
     function reader() {
@@ -188,23 +188,8 @@ class Session {
         }
     }
 
-    // TODO: handle socket close
-    function writer() {
-        while ($msg = $this->writech->recv()) {
-            $this->write($msg);
-        }
-    }
-
     function read_msg() {
         return parse_msg($this->read_line());
-    }
-
-    function write_msg($cmd, $params, $source = SERVER_SOURCE) {
-        $this->write_async(new Message(
-            $cmd,
-            $params,
-            $source,
-        ));
     }
 
     function read_line() {
@@ -239,20 +224,29 @@ class Session {
         return $line;
     }
 
-    // TODO: write buffering? we kinda need it in order to be able
-    //         to enqueue writes from other fibers. unless we implement
-    //         some sort of channel where each client receives items
-    //         and then writes them to its own socket.
-    //       so the core loop for each client would be something like:
-    //         select
-    //           msg := <-read_line
-    //             parse_and_handle(msg)
-    //           msg := <-pending_write
-    //             write(msg)
-    //       that does make the clients more complex though.
-    //       could we create a separate fiber for writes? that could work.
-    //         that makes them fully async. and we can enforce max size there,
-    //         as long as we make sure the error propagates to the client.
+    // TODO: handle socket close
+    function writer() {
+        while (($msg = $this->writech->recv()) !== null) {
+            $this->write($msg);
+            // printf("%s > %s\n", $this->name, $msg);
+        }
+    }
+
+    function write_msg($cmd, $params, $source = SERVER_SOURCE) {
+        $this->write_async(new Message(
+            $cmd,
+            $params,
+            $source,
+        ));
+    }
+
+    function write_async($data) {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot write to closed socket');
+        }
+        $this->writech->send($data . CLIENT_LINE_FEED);
+    }
+
     function write($data) {
         $remaining = strlen($data);
 
@@ -268,16 +262,11 @@ class Session {
                 return null;
             }
 
+            printf("%s > %s\n", $this->name, rtrim(substr($data, 0, $n)));
+
             $remaining -= $n;
             $data = substr($data, $n);
         }
-    }
-
-    function write_async($data) {
-        if ($this->closed) {
-            throw new \RuntimeException('cannot write to closed socket');
-        }
-        $this->writech->send($data . CLIENT_LINE_FEED);
     }
 
     function close() {

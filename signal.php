@@ -14,7 +14,7 @@ function exception_error_handler(
 
 class SignalBuffer {
     function __construct(
-        public $ch = new sync\Channel(),
+        public $ch = new sync\Chan(),
     ) {}
 
     function handler($signo) {
