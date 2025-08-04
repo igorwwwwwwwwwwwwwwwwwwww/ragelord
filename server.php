@@ -21,7 +21,7 @@ class Session {
     ) {}
 
     function reader() {
-        echo "{$this->name} starting fiber\n";
+        echo "{$this->name} starting reader\n";
 
         $user = null;
 
@@ -226,10 +226,14 @@ class Session {
 
     // TODO: handle socket close
     function writer() {
+        echo "{$this->name} starting writer\n";
+
         while (($msg = $this->writech->recv()) !== null) {
             $this->write($msg);
             // printf("%s > %s\n", $this->name, $msg);
         }
+
+        echo "{$this->name} writer closed\n";
     }
 
     function write_msg($cmd, $params, $source = SERVER_SOURCE) {

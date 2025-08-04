@@ -20,21 +20,40 @@ pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
 
 // TODO: implement gracceful termination
 go(function () use ($sigbuf) {
-    $server = new ServerState();;
+    $server_fibers = [];
+
+    go(function () use (&$server_fibers, $sigbuf) {
+        while ($signo = $sigbuf->ch->recv()) {
+            printf("received signal: %s\n", signo_name($signo));
+            switch ($signo) {
+                case SIGINT: // fallthru
+                case SIGTERM:
+                    foreach ($server_fibers as $fiber) {
+                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
+                    }
+                    return;
+                case SIGINFO:
+                    engine_print_backtrace();
+                    debug_print_backtrace();
+                    break;
+            }
+        }
+    });
+
     $server_socks = [
         listen_retry(fn () => listen4('127.0.0.1', 6667)),
         listen_retry(fn () => listen6('::1', 6667)),
     ];
     echo "ready\n";
 
-    $server_fibers = [];
+    $server = new ServerState();
     foreach ($server_socks as $server_sock) {
         $server_fibers[] = go(function () use ($server, $server_sock) {
             try {
                 while (true) {
                     $sock = accept($server_sock);
                     go(function () use ($server, $sock) {
-                        $name = client_socket_name($sock);
+                        $name = socket_name($sock);
                         $sess = new Session($name, $sock, $server);
                         go(fn () => $sess->reader());
                         go(fn () => $sess->writer());
@@ -45,31 +64,6 @@ go(function () use ($sigbuf) {
             }
         });
     }
-
-    go(function () use ($server_fibers, $sigbuf) {
-        while ($signo = $sigbuf->ch->recv()) {
-            printf("received signal: %s\n", signo_name($signo));
-            switch ($signo) {
-                case SIGINT:
-                    // TODO: notify all clients before shutting down
-                    foreach ($server_fibers as $fiber) {
-                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
-                    }
-                    return;
-                case SIGTERM:
-                    foreach ($server_fibers as $fiber) {
-                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
-                    }
-                    return;
-                case SIGINFO:
-                    foreach ($clients as $client) {
-                        client_backtrace($client);
-                    }
-                    debug_print_backtrace();
-                    break;
-            }
-        }
-    });
 });
 
 event_loop();

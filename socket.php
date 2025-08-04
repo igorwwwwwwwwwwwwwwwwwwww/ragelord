@@ -21,7 +21,7 @@ function listen6($addr, $port) {
 }
 
 // TODO: format depending on ipv4 vs ipv6
-function client_socket_name($sock) {
+function socket_name($sock) {
     socket_getpeername($sock, $addr, $port);
     return "[$addr]:$port";
 }

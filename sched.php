@@ -10,32 +10,44 @@ const SELECT_TIMEOUT = 10 * TIME_NANOSECONDS;
 
 // NOTE: only one fiber can be waiting on a socket
 class EngineState {
-    public static $procs = [];
+    public static $fibers;
+    public static $fiber_state = [];
 
     public static $pending_read = [];
     public static $pending_read_waiter = [];
+
     public static $pending_write = [];
     public static $pending_write_waiter = [];
 
     public static $pending_sleep_heap;
 }
+EngineState::$fibers = new \WeakMap();
 EngineState::$pending_sleep_heap = new \SplMinHeap();
 
 // TODO: remove pending reads and writes on exit
 //       perhaps we can do this via finally block in the functions below.
 function go(callable $f) {
     $fiber = new Fiber($f);
-    EngineState::$procs[] = $fiber;
+
+    $frame = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 1)[0];
+    $name = sprintf('fiber %s (%s:%d)', spl_object_id($fiber), $frame['file'], $frame['line']);
+
+    EngineState::$fibers[$fiber] = $name;
     $fiber->start();
     return $fiber;
 }
 
 // io. call from fiber
 function accept($sock) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'read';
     EngineState::$pending_read[spl_object_id($sock)] = $sock;
     EngineState::$pending_read_waiter[spl_object_id($sock)] = Fiber::getCurrent();
 
     Fiber::suspend();
+
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+    unset(EngineState::$pending_read[spl_object_id($sock)]);
+    unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
 
     $client_sock = socket_accept($sock);
     socket_set_nonblock($client_sock);
@@ -44,21 +56,75 @@ function accept($sock) {
 }
 
 function read($sock, &$buf, $len) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'read';
     EngineState::$pending_read[spl_object_id($sock)] = $sock;
     EngineState::$pending_read_waiter[spl_object_id($sock)] = Fiber::getCurrent();
 
     Fiber::suspend();
 
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+    unset(EngineState::$pending_read[spl_object_id($sock)]);
+    unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
+
     return socket_recv($sock, $buf, $len, MSG_DONTWAIT);
 }
 
 function write($sock, $buf) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'write';
     EngineState::$pending_write[spl_object_id($sock)] = $sock;
     EngineState::$pending_write_waiter[spl_object_id($sock)] = Fiber::getCurrent();
 
     Fiber::suspend();
 
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+    unset(EngineState::$pending_write[spl_object_id($sock)]);
+    unset(EngineState::$pending_write_waiter[spl_object_id($sock)]);
+
     return socket_write($sock, $buf);
+}
+
+// NOTE: we are shadowing sleep from stdlib
+function sleep($duration_seconds) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'sleep';
+
+    $deadline = hrtime(true) + (int) ($duration_seconds * TIME_NANOSECONDS);
+    EngineState::$pending_sleep_heap->insert([
+        $deadline,
+        Fiber::getCurrent(),
+    ]);
+
+    Fiber::suspend();
+
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+
+    // no bookkeeping needed here,
+    // event loop removes item from heap before resuming.
+}
+
+function fiber_print_backtrace($fiber, $name) {
+    if (!$fiber->isStarted()) {
+        printf("%s [not started]\n", $name);
+        printf("\n");
+    } else if ($fiber->isTerminated()) {
+        printf("%s [terminated]\n", $name);
+        printf("\n");
+    } else {
+        $state = EngineState::$fiber_state[spl_object_id($fiber)] ?? 'unknown';
+
+        $r = new \ReflectionFiber($fiber);
+        printf("%s [%s]\n", $name, $state);
+        foreach ($r->getTrace() as $i => $frame) {
+            $args = array_map(fn ($arg) => var_export($arg, true), $frame['args']);
+            printf("#%d %s:%d %s%s%s(%s)\n", $i, $frame['file'] ?? '', $frame['line'] ?? '', $frame['class'] ?? '', $frame['type'] ?? '', $frame['function'] ?? '', implode(', ', $args));
+        }
+        printf("\n");
+    }
+}
+
+function engine_print_backtrace() {
+    foreach (EngineState::$fibers as $fiber => $name) {
+        fiber_print_backtrace($fiber, $name);
+    }
 }
 
 // from nanoseconds to [seconds, micros]
@@ -68,41 +134,18 @@ function time_from_nanos($duration_nanos) {
     return [$seconds, $micros];
 }
 
-// NOTE: we are shadowing sleep from stdlib
-function sleep($duration_seconds) {
-    $deadline = hrtime(true) + (int) ($duration_seconds * TIME_NANOSECONDS);
-    EngineState::$pending_sleep_heap->insert([
-        $deadline,
-        Fiber::getCurrent(),
-    ]);
-
-    Fiber::suspend();
-}
-
-// TODO: remove clients here, look only at fibers, but infer fiber name
-//         by reflecting on getCallable() / inferring start location from stack.
-//       maybe have a global fiber -> name registry so we can associate socket name.
-function client_backtrace() {
-    if (!$client->fiber->isStarted()) {
-        printf("%s [not started]\n", $client->name);
-        printf("\n");
-    } else if ($client->fiber->isTerminated()) {
-        printf("%s [terminated]\n", $client->name);
-        printf("\n");
-    } else {
-        printf("%s\n", $client->name);
-        $r = new \ReflectionFiber($client->fiber);
-        foreach ($r->getTrace() as $i => $frame) {
-            $args = array_map(fn ($arg) => var_export($arg, true), $frame['args']);
-            printf("#%d %s:%d %s%s%s(%s)\n", $i, $frame['file'] ?? '', $frame['line'] ?? '', $frame['class'] ?? '', $frame['type'] ?? '', $frame['function'] ?? '', implode(', ', $args));
+function debug_enabled($subsystem) {
+    static $flags = null;
+    if ($flags === null) {
+        $flags = [];
+        foreach (explode(',', getenv('RAGELORD_DEBUG') ?: '') as $flag) {
+            $flags[$flag] = true;
         }
-        printf("\n");
     }
+    return $flags[$subsystem] ?? null;
 }
 
 function event_loop() {
-    $clients = [];
-
     while (true) {
         // echo "loop\n";
 
@@ -144,7 +187,9 @@ function event_loop() {
 
         $changed = 0;
         try {
-            // printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
+            if (debug_enabled('sched')) {
+                printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
+            }
             if ($read && count($read) || $write && count($write) || $except && count($except)) {
                 $changed = socket_select($read, $write, $except, $seconds, $micros);
             } else {
@@ -160,22 +205,22 @@ function event_loop() {
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
 
-        // printf("< select changed=%d\n", $changed);
+        if (debug_enabled('sched')) {
+            printf("< select changed=%d\n", $changed);
+        }
 
         if ($changed > 0) {
-            // printf("< select read=%d write=%d\n", count($read), count($write));
+            if (debug_enabled('sched')) {
+                printf("< select read=%d write=%d\n", count($read), count($write));
+            }
 
             foreach ($read as $sock) {
                 $fiber = EngineState::$pending_read_waiter[spl_object_id($sock)];
-                unset(EngineState::$pending_read[spl_object_id($sock)]);
-                unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
                 $fiber->resume();
             }
 
             foreach ($write as $sock) {
                 $fiber = EngineState::$pending_write_waiter[spl_object_id($sock)];
-                unset(EngineState::$pending_write[spl_object_id($sock)]);
-                unset(EngineState::$pending_write_waiter[spl_object_id($sock)]);
                 $fiber->resume();
             }
         }
