@@ -33,12 +33,10 @@ class Chan {
 
     // TODO: iterator/generator
     function recv() {
-        if ($this->buf) {
-            return array_shift($this->buf);
+        while (count($this->buf) === 0) {
+            $buf = null;
+            read($this->r, $buf, 1);
         }
-
-        $buf = null;
-        read($this->r, $buf, 1);
 
         return array_shift($this->buf);
     }

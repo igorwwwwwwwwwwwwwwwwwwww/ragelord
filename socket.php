@@ -26,9 +26,12 @@ function socket_name($sock) {
     return "[$addr]:$port";
 }
 
-function listen_retry(callable $f) {
+function listen_retry(callable $f, &$canceled) {
     $retries = 0;
     while (true) {
+        if ($canceled) {
+            return;
+        }
         try {
             return $f();
         } catch (\ErrorException $e) {

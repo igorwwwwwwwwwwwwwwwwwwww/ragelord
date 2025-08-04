@@ -130,8 +130,6 @@ class ServerState {
             throw new \RuntimeException(sprintf('user %s is not a member in channel: %s', $user->nick, $chan_name));
         }
 
-        var_dump('broadcasting');
-
         foreach ($this->channels[$chan_name]->members as $member) {
             $member->sess->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
         }

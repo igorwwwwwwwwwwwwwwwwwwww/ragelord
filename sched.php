@@ -147,8 +147,6 @@ function debug_enabled($subsystem) {
 
 function event_loop() {
     while (true) {
-        // echo "loop\n";
-
         $read = array_values(EngineState::$pending_read);
         $write = array_values(EngineState::$pending_write);
         $except = null;
@@ -166,6 +164,13 @@ function event_loop() {
             $fiber->resume();
         }
 
+        if (count(EngineState::$pending_read) === 0 && count(EngineState::$pending_write) === 0 && EngineState::$pending_sleep_heap->isEmpty()) {
+            if (debug_enabled('sched')) {
+                echo "no more pending events, exiting event loop\n";
+            }
+            return;
+        }
+
         $select_timeout = SELECT_TIMEOUT;
         if (!EngineState::$pending_sleep_heap->isEmpty()) {
             [$deadline, $fiber] = EngineState::$pending_sleep_heap->top();
@@ -181,9 +186,6 @@ function event_loop() {
 
         // hrtime(true) returns nanos, but socket_select expects micros
         [$seconds, $micros] = time_from_nanos($select_timeout);
-
-        // var_dump('read', EngineState::$pending_read_waiter);
-        // var_dump('write', EngineState::$pending_write_waiter);
 
         $changed = 0;
         try {
