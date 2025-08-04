@@ -21,7 +21,7 @@ class Channel {
     // TODO: membership flags, e.g. op
     function join($user) {
         foreach ($this->members as $member) {
-            $member->client->write_msg_async('JOIN', [$this->name], $user->nick);
+            $member->client->write_msg('JOIN', [$this->name], $user->nick);
         }
 
         $this->members[$user->nick] = $user;
@@ -34,7 +34,7 @@ class Channel {
         unset($this->members[$user->nick]);
 
         foreach ($this->members as $member) {
-            $member->client->write_msg_async('PART', [$this->name, $reason], $user->nick);
+            $member->client->write_msg('PART', [$this->name, $reason], $user->nick);
         }
     }
 
@@ -43,9 +43,9 @@ class Channel {
         foreach ($this->members as $member) {
             // TODO: RPL_TOPICWHOTIME
             if ($topic) {
-                $member->client->write_msg_async('332', [$member->nick, $this->name, $topic]);
+                $member->client->write_msg('332', [$member->nick, $this->name, $topic]);
             } else {
-                $member->client->write_msg_async('331', [$member->nick, $this->name]);
+                $member->client->write_msg('331', [$member->nick, $this->name]);
             }
         }
     }
@@ -118,7 +118,7 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such user: %s', $target));
         }
 
-        $this->users[$target]->client->write_msg_async('PRIVMSG', [$target->nick, $text], $user->nick);
+        $this->users[$target]->client->write_msg('PRIVMSG', [$target->nick, $text], $user->nick);
     }
 
     function privmsg_channel($user, $chan_name, $text) {
@@ -131,7 +131,7 @@ class ServerState {
         }
 
         foreach ($this->channels[$chan_name]->members as $member) {
-            $member->client->write_msg_async('PRIVMSG', [$chan_name, $text], $user->nick);
+            $member->client->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
         }
     }
 }

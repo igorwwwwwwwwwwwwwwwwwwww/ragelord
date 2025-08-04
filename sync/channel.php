@@ -43,7 +43,6 @@ class Channel {
     }
 
     function notify() {
-        var_dump(['notify']);
         socket_write($this->w, '1');
     }
 }

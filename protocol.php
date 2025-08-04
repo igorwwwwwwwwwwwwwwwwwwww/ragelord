@@ -315,14 +315,6 @@ class Client {
     }
 
     function write_msg($cmd, $params, $source = SERVER_SOURCE) {
-        $this->write(new Message(
-            $cmd,
-            $params,
-            $source,
-        ));
-    }
-
-    function write_msg_async($cmd, $params, $source = SERVER_SOURCE) {
         $this->write_async(new Message(
             $cmd,
             $params,
@@ -404,6 +396,7 @@ class Client {
     }
 
     function close() {
+        printf('closing\n');
         $this->closed = true;
         socket_close($this->sock);
     }

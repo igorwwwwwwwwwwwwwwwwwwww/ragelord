@@ -141,7 +141,7 @@ function event_loop($sigbuf) {
 
         $changed = 0;
         try {
-            printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
+            // printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
             if ($read && count($read) || $write && count($write) || $except && count($except)) {
                 $changed = socket_select($read, $write, $except, $seconds, $micros);
             } else {
@@ -157,10 +157,10 @@ function event_loop($sigbuf) {
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
 
-        printf("< select changed=%d\n", $changed);
+        // printf("< select changed=%d\n", $changed);
 
         if ($changed > 0) {
-            printf("< select read=%d write=%d\n", count($read), count($write));
+            // printf("< select read=%d write=%d\n", count($read), count($write));
 
             foreach ($read as $sock) {
                 $fiber = EngineState::$pending_read_waiter[spl_object_id($sock)];
