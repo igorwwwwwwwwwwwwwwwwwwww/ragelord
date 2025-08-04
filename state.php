@@ -118,7 +118,7 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such user: %s', $target));
         }
 
-        $this->users[$target]->sess->write_msg('PRIVMSG', [$target->nick, $text], $user->nick);
+        $this->users[$target]->sess->write_msg('PRIVMSG', [$this->users[$target]->nick, $text], $user->nick);
     }
 
     function privmsg_channel($user, $chan_name, $text) {

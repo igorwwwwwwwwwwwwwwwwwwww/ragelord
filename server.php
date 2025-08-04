@@ -208,6 +208,7 @@ class Session {
 
             if ($n === 0) {
                 // EOF
+                $this->close();
                 throw new \RuntimeException('socket closed');
             }
 
@@ -263,6 +264,7 @@ class Session {
 
             if ($n === 0) {
                 // EOF
+                $this->close();
                 return null;
             }
 
@@ -274,8 +276,11 @@ class Session {
     }
 
     function close() {
-        printf('closing\n');
+        if ($this->closed) {
+            return;
+        }
         $this->closed = true;
         socket_close($this->sock);
+        $this->writech->send(null);
     }
 }
