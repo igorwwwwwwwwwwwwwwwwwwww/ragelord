@@ -132,7 +132,7 @@ class Client {
         public ServerState $server,
         public $closed = false,
         public $readbuf = '',
-        public $writechan = new sync\Channel(),
+        public $writech = new sync\Channel(),
     ) {}
 
     function reader() {
@@ -305,7 +305,7 @@ class Client {
 
     // TODO: handle socket close
     function writer() {
-        while ($msg = $this->writechan->recv()) {
+        while ($msg = $this->writech->recv()) {
             $this->write($msg);
         }
     }
@@ -400,7 +400,7 @@ class Client {
         if ($this->closed) {
             throw new \RuntimeException('cannot write to closed socket');
         }
-        $this->writechan->send($data . CLIENT_LINE_FEED);
+        $this->writech->send($data . CLIENT_LINE_FEED);
     }
 
     function close() {

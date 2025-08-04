@@ -21,10 +21,13 @@ class EngineState {
 }
 EngineState::$pending_sleep_heap = new \SplMinHeap();
 
+// TODO: remove pending reads and writes on exit
+//       perhaps we can do this via finally block in the functions below.
 function go(callable $f) {
     $fiber = new Fiber($f);
     EngineState::$procs[] = $fiber;
     $fiber->start();
+    return $fiber;
 }
 
 // io. call from fiber
@@ -103,25 +106,6 @@ function event_loop($sigbuf) {
     while (true) {
         // echo "loop\n";
 
-        // TODO: turn this into a channel like in go
-        //       and then consume from a fiber.
-        foreach ($sigbuf->consume() as $signo) {
-            printf("received signal: %s\n", signo_name($signo));
-            switch ($signo) {
-                case SIGINT:
-                    // TODO: notify all clients before shutting down
-                    return;
-                case SIGTERM:
-                    return;
-                case SIGINFO:
-                    foreach ($clients as $client) {
-                        client_backtrace($client);
-                    }
-                    debug_print_backtrace();
-                    break;
-            }
-        }
-
         $read = array_values(EngineState::$pending_read);
         $write = array_values(EngineState::$pending_write);
         $except = null;
@@ -157,7 +141,7 @@ function event_loop($sigbuf) {
 
         $changed = 0;
         try {
-            // printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
+            printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
             if ($read && count($read) || $write && count($write) || $except && count($except)) {
                 $changed = socket_select($read, $write, $except, $seconds, $micros);
             } else {
@@ -173,10 +157,10 @@ function event_loop($sigbuf) {
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
 
-        // printf("< select changed=%d\n", $changed);
+        printf("< select changed=%d\n", $changed);
 
         if ($changed > 0) {
-            // printf("< select read=%d write=%d\n", count($read), count($write));
+            printf("< select read=%d write=%d\n", count($read), count($write));
 
             foreach ($read as $sock) {
                 $fiber = EngineState::$pending_read_waiter[spl_object_id($sock)];

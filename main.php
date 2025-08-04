@@ -18,7 +18,7 @@ pcntl_signal(SIGTERM, [$sigbuf, 'handler']);
 pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
 
 // TODO: implement gracceful termination
-go(function () {
+go(function () use ($sigbuf) {
     $server = new ServerState();;
     $server_socks = [
         listen_retry(fn () => listen4('127.0.0.1', 6667)),
@@ -26,8 +26,9 @@ go(function () {
     ];
     echo "ready\n";
 
+    $server_fibers = [];
     foreach ($server_socks as $server_sock) {
-        go(function () use ($server, $server_sock) {
+        $server_fibers[] = go(function () use ($server, $server_sock) {
             try {
                 while (true) {
                     $sock = accept($server_sock);
@@ -43,6 +44,31 @@ go(function () {
             }
         });
     }
+
+    go(function () use ($server_fibers, $sigbuf) {
+        while ($signo = $sigbuf->ch->recv()) {
+            printf("received signal: %s\n", signo_name($signo));
+            switch ($signo) {
+                case SIGINT:
+                    // TODO: notify all clients before shutting down
+                    foreach ($server_fibers as $fiber) {
+                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
+                    }
+                    return;
+                case SIGTERM:
+                    foreach ($server_fibers as $fiber) {
+                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
+                    }
+                    return;
+                case SIGINFO:
+                    foreach ($clients as $client) {
+                        client_backtrace($client);
+                    }
+                    debug_print_backtrace();
+                    break;
+            }
+        }
+    });
 });
 
 event_loop($sigbuf);

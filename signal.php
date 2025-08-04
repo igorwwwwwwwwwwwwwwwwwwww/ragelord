@@ -14,17 +14,11 @@ function exception_error_handler(
 
 class SignalBuffer {
     function __construct(
-        public $signals = [],
+        public $ch = new sync\Channel(),
     ) {}
 
     function handler($signo) {
-        $this->signals[] = $signo;
-    }
-
-    function consume() {
-        $signals = $this->signals;
-        $this->signals = [];
-        return $signals;
+        $this->ch->send($signo);
     }
 }
 
