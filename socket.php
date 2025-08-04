@@ -2,7 +2,7 @@
 
 namespace ragelord;
 
-const LISTEN_BACKLOG  = 512;
+const LISTEN_BACKLOG = 512;
 
 function listen4($addr, $port) {
     $sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);

@@ -2,136 +2,287 @@
 
 namespace ragelord;
 
-class User {
+use Fiber;
+
+const SERVER_SOURCE = 'localhost';
+
+const CLIENT_READ_SIZE = 4096;
+const CLIENT_LINE_FEED = "\r\n";
+const CLIENT_MAX_WRITE_BUF_SIZE = 8192;
+
+class Session {
     function __construct(
         public $name,
-        public $nick,
-        public $client, // instead of client, pass something smaller, like a writer; maybe decouple this somehow
-    ) {}
-}
-
-class Channel {
-    function __construct(
-        public $name,
-        public $topic = null,
-        public $members = [], // SplObjecStorage set?
-        public $symbol = '=', // public
+        public $sock,
+        public ServerState $server,
+        public $closed = false,
+        public $readbuf = '',
+        public $writech = new sync\Channel(),
     ) {}
 
-    // TODO: membership flags, e.g. op
-    function join($user) {
-        foreach ($this->members as $member) {
-            $member->client->write_msg('JOIN', [$this->name], $user->nick);
-        }
+    function reader() {
+        echo "{$this->name} starting fiber\n";
 
-        $this->members[$user->nick] = $user;
-    }
+        $user = null;
 
-    function part($user, $reason = null) {
-        if (!isset($this->members[$user->nick])) {
-            throw new \RuntimeException(sprintf('cannot part: user %s is not a member of %s', $user->nick, $this->name));
-        }
-        unset($this->members[$user->nick]);
+        try {
+            $username = $password = $nick = null;
 
-        foreach ($this->members as $member) {
-            $member->client->write_msg('PART', [$this->name, $reason], $user->nick);
-        }
-    }
+            while (true) {
+                if ($username && $nick) {
+                    break;
+                }
 
-    function set_topic($topic) {
-        $this->topic = $topic;
-        foreach ($this->members as $member) {
-            // TODO: RPL_TOPICWHOTIME
-            if ($topic) {
-                $member->client->write_msg('332', [$member->nick, $this->name, $topic]);
-            } else {
-                $member->client->write_msg('331', [$member->nick, $this->name]);
+                $msg = $this->read_msg();
+                switch ($msg->cmd) {
+                    case 'USER':
+                        //      Command: USER
+                        //   Parameters: <username> 0 * <realname>
+                        $username = $msg->params[0];
+                        break;
+                    case 'PASS':
+                        //      Command: PASS
+                        //   Parameters: <password>
+                        $password = $msg->params[0];
+                        break;
+                    case 'NICK':
+                        //      Command: NICK
+                        //   Parameters: <nickname>
+                        $nick = $msg->params[0];
+                        break;
+                    case 'CAP':
+                        // TODO: implement proper capability negotiation
+                        // ignore for now
+                        break;
+                    default:
+                        throw new \RuntimeException(sprintf('invalid cmd, expected one of %s, got: %s', json_encode($reg_cmds), $msg->cmd));
+                }
+            }
+
+            $user = $this->server->register($username, $nick, $this);
+
+            // TODO: NICK: check if nick is available, adjust it if not
+            // TODO: NICK: allow nick to change
+            // TODO: USER: implement realname
+            // TODO: various numeric error replies for all of these
+
+            // https://modern.ircdocs.horse/#rplwelcome-001
+            $this->write_msg('001', [$user->nick, "Welcome to the rage Network, {$user->nick}"]);
+            $this->write_msg('002', [$user->nick, sprintf("Your host is rage, running version 0.0.1")]);
+            $this->write_msg('003', [$user->nick, "This server was created in the future"]);
+            $this->write_msg('004', [$user->nick, 'rage', '0.0.1', 'o', 'o']);
+            $this->write_msg('251', [$user->nick, "There are 0 users and 0 invisible on 1 servers"]);
+            $this->write_msg('255', [$user->nick, "I have 0 clients and 1 servers"]);
+
+            // LUSERS
+            $this->write_msg('005', [$user->nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
+
+            // MOTD
+            $this->write_msg('375', [$user->nick, '- <server> Message of the day - ']);
+            $this->write_msg('372', [$user->nick, 'moin']);
+            $this->write_msg('376', [$user->nick, 'End of /MOTD command.']);
+
+            // TODO: unimplemented: OPER
+
+            while (true) {
+                $msg = $this->read_msg();
+                switch ($msg->cmd) {
+                    case 'PING':
+                        //      Command: PING
+                        //   Parameters: <token>
+                        $this->write_msg('PONG', [$user->nick, $msg->params[0] ?? null]);
+                        break;
+                    case 'QUIT':
+                        //     Command: QUIT
+                        //  Parameters: [<reason>]
+                        $this->write_msg('ERROR', [$user->nick, $msg->params[0] ?? null]);
+                        $this->close();
+                        return;
+                    case 'JOIN':
+                        //      Command: JOIN
+                        //   Parameters: <channel>{,<channel>} [<key>{,<key>}]
+                        //   Alt Params: 0
+                        if ($msg->params === ['0']) {
+                            $this->server->part_all($user);
+                            // TODO: send part responses for each parted channel
+                            break;
+                        }
+                        $channels = explode(',', $msg->params[0] ?? '');
+                        $keys = explode(',', $msg->params[1] ?? '');
+                        $chankeys = array_combine($channels, $keys);
+                        foreach ($chankeys as $chan_name => $key) {
+                            // TODO: handle key param
+                            $channel = $this->server->join($user, $chan_name);
+                            $this->write_msg('JOIN', [$user->nick, $channel->name]);
+                            if ($channel->topic) {
+                                $this->write_msg('332', [$user->nick, $channel->name, $channel->topic]);
+                            }
+                            foreach ($channel->members as $member) {
+                                $this->write_msg('353', [$user->nick, $channel->symbol, $channel->name, $member->nick]);
+                            }
+                            $this->write_msg('366', [$user->nick, $channel->name, 'End of /NAMES list']);
+                        }
+                        break;
+                    case 'PART':
+                        //      Command: PART
+                        //   Parameters: <channel>{,<channel>} [<reason>]
+                        $channels = explode(',', $msg->params[0] ?? '');
+                        $reason = $msg->params[1] ?? null;
+                        foreach ($channels as $chan_name) {
+                            $this->server->part($user, $chan_name, $reason);
+                            $this->write_msg('PART', [$user->nick, $chan_name, $reason]);
+                        }
+                        break;
+                    case 'TOPIC':
+                        //      Command: TOPIC
+                        //   Parameters: <channel> [<topic>]
+                        $chan_name = $msg->params[0];
+                        $topic = $msg->params[1] ?? null;
+                        if ($topic === null) {
+                            $topic = $this->server->get_topic($chan_name);
+                            // TODO: RPL_TOPICWHOTIME
+                            if ($topic) {
+                                $this->write_msg('332', [$user->nick, $chan_name, $topic]);
+                            } else {
+                                $this->write_msg('331', [$user->nick, $chan_name]);
+                            }
+                        } else {
+                            // broadcast happens internally
+                            $this->server->set_topic($chan_name, $topic);
+                        }
+                        break;
+                    case 'PRIVMSG':
+                        //      Command: PRIVMSG
+                        //   Parameters: <target>{,<target>} <text to be sent>
+                        $targets = explode(',', $msg->params[0] ?? '');
+                        $text = $msg->params[1];
+                        foreach ($targets as $target) {
+                            if ($target[0] === '#' || $target[0] === '&') {
+                                $this->server->privmsg_channel($user, $target, $text);
+                            } else {
+                                $this->server->privmsg($user, $target, $text);
+                            }
+                        }
+                        break;
+                    // TODO: NOTICE
+                    // TODO: TOPIC, NAMES, LIST, INVITE, KICK
+                    // TODO: MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
+                    // TODO: WHO, WHOIS, WHOWAS
+                    // TODO: KILL, REHASH, RESTART, SQUIT
+                    // TODO: AWAY, LINKS, USERHOST, WALLOPS
+                    default:
+                        throw new \RuntimeException("unsupported command {$msg->cmd}");
+                }
+            }
+        } catch (\Exception $e) {
+            echo "{$this->name} ERROR: {$e}\n";
+            if (!$this->closed) {
+                $this->write_msg('ERROR', [$e->getMessage()]);
+                $this->close();
+            }
+        } finally {
+            echo "{$this->name} client terminated\n";
+            if ($user) {
+                $this->server->unregister($user);
             }
         }
     }
-}
 
-class ServerState {
-    function __construct(
-        public $users = [],
-        public $channels = [],
-    ) {}
-
-    function register($username, $nick, $client) {
-        if (isset($this->users[$nick])) {
-            throw new \RuntimeException('nick already exists');
+    // TODO: handle socket close
+    function writer() {
+        while ($msg = $this->writech->recv()) {
+            $this->write($msg);
         }
-        $this->users[$nick] = new User($username, $nick, $client);
-        return $this->users[$nick];
     }
 
-    function unregister($user) {
-        if (!isset($this->users[$user->nick])) {
-            return;
+    function read_msg() {
+        return parse_msg($this->read_line());
+    }
+
+    function write_msg($cmd, $params, $source = SERVER_SOURCE) {
+        $this->write_async(new Message(
+            $cmd,
+            $params,
+            $source,
+        ));
+    }
+
+    function read_line() {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot read from closed socket');
         }
 
-        foreach ($this->channels as $channel) {
-            if (isset($channel->members[$user->nick])) {
-                $channel->part($user);
+        $len = CLIENT_READ_SIZE;
+        while (!str_contains($this->readbuf, CLIENT_LINE_FEED)) {
+            $buf = null;
+            $n = read($this->sock, $buf, $len);
+
+            if ($n === false) {
+                throw new \RuntimeException(socket_strerror(socket_last_error()));
+            }
+
+            if ($n === 0) {
+                // EOF
+                throw new \RuntimeException('socket closed');
+            }
+
+            $this->readbuf .= $buf;
+            $len -= $n;
+
+            if ($len <= 0) {
+                throw new \RuntimeException(sprintf('input line too long, must be under %d bytes', CLIENT_READ_SIZE));
             }
         }
-        unset($this->users[$user->nick]);
+
+        [$line, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
+        printf("%s < %s\n", $this->name, $line);
+        return $line;
     }
 
-    function join($user, $chan_name) {
-        $this->channels[$chan_name] ??= new Channel($chan_name);
-        $this->channels[$chan_name]->join($user);
-        return $this->channels[$chan_name];
-    }
+    // TODO: write buffering? we kinda need it in order to be able
+    //         to enqueue writes from other fibers. unless we implement
+    //         some sort of channel where each client receives items
+    //         and then writes them to its own socket.
+    //       so the core loop for each client would be something like:
+    //         select
+    //           msg := <-read_line
+    //             parse_and_handle(msg)
+    //           msg := <-pending_write
+    //             write(msg)
+    //       that does make the clients more complex though.
+    //       could we create a separate fiber for writes? that could work.
+    //         that makes them fully async. and we can enforce max size there,
+    //         as long as we make sure the error propagates to the client.
+    function write($data) {
+        $remaining = strlen($data);
 
-    function part($user, $chan_name, $reason) {
-        $this->channels[$chan_name]->part($user, $reason);
-    }
+        while ($remaining > 0) {
+            $n = write($this->sock, $data);
 
-    // TODO: more efficient mapping of channel membership
-    function part_all($user, $reason) {
-        foreach ($this->channels as $channel) {
-            if (isset($channel->members[$user->nick])) {
-                $channel->part($user, $reason);
+            if ($n === false) {
+                throw new \RuntimeException(socket_strerror(socket_last_error()));
             }
+
+            if ($n === 0) {
+                // EOF
+                return null;
+            }
+
+            $remaining -= $n;
+            $data = substr($data, $n);
         }
     }
 
-    function get_topic($chan_name) {
-        if (!isset($this->channels[$chan_name])) {
-            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
+    function write_async($data) {
+        if ($this->closed) {
+            throw new \RuntimeException('cannot write to closed socket');
         }
-
-        return $this->channels[$chan_name]->topic;
+        $this->writech->send($data . CLIENT_LINE_FEED);
     }
 
-    function set_topic($chan_name, $topic) {
-        if (!isset($this->channels[$chan_name])) {
-            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
-        }
-
-        $this->channels[$chan_name]->set_topic($topic);
-    }
-
-    function privmsg($user, $target, $text) {
-        if (!isset($this->users[$target])) {
-            throw new \RuntimeException(sprintf('no such user: %s', $target));
-        }
-
-        $this->users[$target]->client->write_msg('PRIVMSG', [$target->nick, $text], $user->nick);
-    }
-
-    function privmsg_channel($user, $chan_name, $text) {
-        if (!isset($this->channels[$chan_name])) {
-            throw new \RuntimeException(sprintf('no such channel: %s', $chan_name));
-        }
-
-        if (!in_array($user, $this->channels[$chan_name]->members)) {
-            throw new \RuntimeException(sprintf('user %s is not a member in channel: %s', $user->nick, $chan_name));
-        }
-
-        foreach ($this->channels[$chan_name]->members as $member) {
-            $member->client->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
-        }
+    function close() {
+        printf('closing\n');
+        $this->closed = true;
+        socket_close($this->sock);
     }
 }

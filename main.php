@@ -3,8 +3,9 @@
 namespace ragelord;
 
 require 'socket.php';
+require 'state.php';
+require 'proto.php';
 require 'server.php';
-require 'protocol.php';
 require 'sched.php';
 require 'sync/channel.php';
 require 'signal.php';
@@ -34,9 +35,9 @@ go(function () use ($sigbuf) {
                     $sock = accept($server_sock);
                     go(function () use ($server, $sock) {
                         $name = client_socket_name($sock);
-                        $client = new Client($name, $sock, $server);
-                        go(fn () => $client->reader());
-                        go(fn () => $client->writer());
+                        $sess = new Session($name, $sock, $server);
+                        go(fn () => $sess->reader());
+                        go(fn () => $sess->writer());
                     });
                 }
             } finally {
