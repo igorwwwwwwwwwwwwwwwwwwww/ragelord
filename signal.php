@@ -13,12 +13,48 @@ function exception_error_handler(
 }
 
 class SignalBuffer {
+    public $r = null;
+    public $w = null;
+
     function __construct(
         public $ch = new sync\Chan(),
-    ) {}
+        public $sigs = [],
+    ) {
+        $pair = [];
+        if (!socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $pair)) {
+            throw new \RuntimeException(socket_strerror(socket_last_error()));
+        }
+        [$this->r, $this->w] = $pair;
+        socket_set_nonblock($this->r);
+        socket_set_nonblock($this->w);
+    }
 
+    // we cannot directly resume a fiber from a signal handler
+    //   so we create a socket pair to resume via event loop instead.
+    //
+    // for this reason we must use socket_write() here directly.
+    //   socket buffers are 8k in size, so we are very unlikely to fail
+    //   notifying here, unless we manage to pile up 8k in unprocessed
+    //   signals, lmao.
     function handler($signo) {
-        $this->ch->send($signo);
+        $this->sigs[] = $signo;
+        socket_write($this->w, '1');
+    }
+
+    // bottom half is in a Fiber, so we can use read() here.
+    function bottom_half() {
+        go(function () {
+            while (true) {
+                while (count($this->sigs) === 0) {
+                    $buf = null;
+                    read($this->r, $buf, 1);
+                }
+
+                while (($signo = array_shift($this->sigs)) !== null) {
+                    $this->ch->send($signo);
+                }
+            }
+        });
     }
 }
 

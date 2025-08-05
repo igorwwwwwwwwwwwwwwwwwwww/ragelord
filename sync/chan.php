@@ -49,8 +49,6 @@ class Chan implements \IteratorAggregate {
         socket_set_nonblock($this->sock_send);
     }
 
-    // we cannot directly resume a fiber from a signal handler
-    // so we create a socket pair to resume via event loop instead.
     function send($msg) {
         while (count($this->buf) > $this->size) {
             $buf = null;

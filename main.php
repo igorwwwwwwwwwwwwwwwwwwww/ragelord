@@ -17,6 +17,7 @@ pcntl_async_signals(true);
 pcntl_signal(SIGINT, [$sigbuf, 'handler']);
 pcntl_signal(SIGTERM, [$sigbuf, 'handler']);
 pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
+$sigbuf->bottom_half();
 
 // TODO: implement gracceful termination
 go(function () use ($sigbuf) {
