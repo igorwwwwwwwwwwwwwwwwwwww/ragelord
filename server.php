@@ -15,6 +15,7 @@ class Session {
         public $name,
         public $sock,
         public ServerState $server,
+        public $closing = false,
         public $closed = false,
         public $readbuf = '',
         public $writech = new sync\Chan(),
@@ -176,7 +177,7 @@ class Session {
             }
         } catch (\Exception $e) {
             echo "{$this->name} ERROR: {$e}\n";
-            if (!$this->closed) {
+            if (!$this->closed && !$this->closing) {
                 $this->write_msg('ERROR', [$e->getMessage()]);
                 $this->close();
             }
@@ -208,7 +209,7 @@ class Session {
 
             if ($n === 0) {
                 // EOF
-                $this->close();
+                $this->close_immediately();
                 // TODO: catch this exception and avoid backtrace
                 throw new \RuntimeException('socket closed');
             }
@@ -232,7 +233,15 @@ class Session {
         echo "{$this->name} starting writer\n";
 
         foreach ($this->writech as $msg) {
+            if ($this->closed) {
+                break;
+            }
             $this->write($msg);
+        }
+
+        if (!$this->closed) {
+            $this->closed = true;
+            socket_close($this->sock);
         }
 
         echo "{$this->name} writer closed\n";
@@ -265,7 +274,7 @@ class Session {
 
             if ($n === 0) {
                 // EOF
-                $this->close();
+                $this->close_immediately();
                 return null;
             }
 
@@ -279,6 +288,14 @@ class Session {
     }
 
     function close() {
+        if ($this->closed || $this->closing) {
+            return;
+        }
+        $this->closing = true;
+        $this->writech->close();
+    }
+
+    function close_immediately() {
         if ($this->closed) {
             return;
         }
