@@ -45,6 +45,12 @@ class SignalBuffer {
     //   of the same signal are coalesced.
     // result: handlers do not need to worry about concurrency, they are
     //   guaranteed to be serialized.
+    //
+    // ideally we would be able to monitor this via signalfd and stream_select,
+    //   but php does not expose signalfd. and then we would also have to call
+    //   socket_import_stream() or figure out how to do the inverse, because php
+    //   does not have a generic select() api for fds. ffi could be an option, e.g.
+    //   https://github.com/chopins/php-epoll/blob/a05eac8ff482c85e782b449e4e2a28592c09b9e6/src/Epoll.php#L190.
     function handler($signo) {
         $this->sigs[] = $signo;
         socket_write($this->w, '1');
