@@ -130,6 +130,9 @@ class ServerState {
         }
 
         foreach ($this->channels[$chan_name]->members as $member) {
+            if ($member === $user) {
+                continue;
+            }
             $member->sess->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
         }
     }
