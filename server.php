@@ -221,7 +221,9 @@ class Session {
         }
 
         [$line, $this->readbuf] = explode(CLIENT_LINE_FEED, $this->readbuf, 2);
-        printf("%s < %s\n", $this->name, $line);
+        if (debug_enabled('io') || debug_enabled('io=r') || debug_enabled('io=read')) {
+            printf("%s < %s\n", $this->name, $line);
+        }
         return $line;
     }
 
@@ -231,7 +233,6 @@ class Session {
 
         while (($msg = $this->writech->recv()) !== null) {
             $this->write($msg);
-            // printf("%s > %s\n", $this->name, $msg);
         }
 
         echo "{$this->name} writer closed\n";
@@ -268,7 +269,9 @@ class Session {
                 return null;
             }
 
-            printf("%s > %s\n", $this->name, rtrim(substr($data, 0, $n)));
+            if (debug_enabled('io') || debug_enabled('io=w') || debug_enabled('io=write')) {
+                printf("%s > %s\n", $this->name, rtrim(substr($data, 0, $n)));
+            }
 
             $remaining -= $n;
             $data = substr($data, $n);
