@@ -209,6 +209,7 @@ class Session {
             if ($n === 0) {
                 // EOF
                 $this->close();
+                // TODO: catch this exception and avoid backtrace
                 throw new \RuntimeException('socket closed');
             }
 
