@@ -11,11 +11,12 @@ class User {
 }
 
 class Channel {
+    public $topic = null;
+    public $members = []; // SplObjecStorage set?
+    public $symbol = '='; // public
+
     function __construct(
         public $name,
-        public $topic = null,
-        public $members = [], // SplObjecStorage set?
-        public $symbol = '=', // public
     ) {}
 
     // TODO: membership flags, e.g. op
@@ -52,10 +53,8 @@ class Channel {
 }
 
 class ServerState {
-    function __construct(
-        public $users = [],
-        public $channels = [],
-    ) {}
+    public $users = [];
+    public $channels = [];
 
     function register($username, $nick, $sess) {
         if (isset($this->users[$nick])) {

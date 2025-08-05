@@ -11,13 +11,14 @@ const CLIENT_LINE_FEED = "\r\n";
 const CLIENT_MAX_WRITE_BUF_SIZE = 8192;
 
 class Session {
+    public $closing = false;
+    public $closed = false;
+    public $readbuf = '';
+
     function __construct(
         public $name,
         public $sock,
         public ServerState $server,
-        public $closing = false,
-        public $closed = false,
-        public $readbuf = '',
         public $writech = new sync\Chan(),
     ) {}
 
