@@ -9,6 +9,7 @@ require 'server.php';
 require 'sched.php';
 require 'sync/chan.php';
 require 'signal.php';
+require 'color.php';
 
 set_error_handler(exception_error_handler(...));
 

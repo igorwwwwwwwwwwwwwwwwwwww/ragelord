@@ -185,11 +185,13 @@ function event_loop() {
         // hrtime(true) returns nanos, but socket_select expects micros
         [$seconds, $micros] = time_from_nanos($select_timeout);
 
+        if (debug_enabled('sched')) {
+            echo color(Color::GRAY, sprintf("select read=%d write=%d timeout=%f ... ", count($read), count($write), $select_timeout / TIME_NANOSECONDS));
+        }
+
         $changed = 0;
         try {
-            if (debug_enabled('sched')) {
-                printf("> select read=%d write=%d timeout=%f\n", count($read), count($write), $select_timeout / TIME_NANOSECONDS);
-            }
+            $time_before_slect = hrtime(true);
             if ($read && count($read) || $write && count($write) || $except && count($except)) {
                 $changed = socket_select($read, $write, $except, $seconds, $micros);
             } else {
@@ -200,18 +202,20 @@ function event_loop() {
                 throw $e;
             }
         }
+        $time_in_slect = hrtime(true) - $time_before_slect;
 
         if ($changed === false) {
             throw new \RuntimeException(socket_strerror(socket_last_error()));
         }
 
-        if (debug_enabled('sched')) {
-            printf("< select changed=%d\n", $changed);
+        if ($changed === 0 && debug_enabled('sched')) {
+
+            echo color(Color::GRAY, sprintf("actual=%f changed=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed));
         }
 
         if ($changed > 0) {
             if (debug_enabled('sched')) {
-                printf("< select read=%d write=%d\n", count($read), count($write));
+                echo color(Color::GRAY, sprintf("actual=%f changed=%d read=%d write=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed, count($read), count($write)));
             }
 
             foreach ($read as $sock) {
