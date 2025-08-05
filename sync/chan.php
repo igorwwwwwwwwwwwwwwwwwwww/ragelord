@@ -28,6 +28,18 @@ use function ragelord\write;
 //           check cancel
 //           write(msg);
 //         }
+//
+// it's possible that none of this is actually necessary and we
+//   can rely on socket buffers instead. they are 8k in size.
+//   we can customize them via SO_SNDBUF and SO_RCVBUF. so if we
+//   can just pump this into the kernel and rely on it to say no
+//   when the buffer is full, we should be fine.
+// though in that case we may want to catch the exception in
+//   the writer fiber and cross-deliver / throw to the reader
+//   thread. though even that may fix itself on the next read
+//   because we check the closed flag. also we socket_close,
+//   which might in fact already signal a read to pending sockets
+//   (?).
 
 // note: we assume a single receiver
 class Chan implements \IteratorAggregate {

@@ -35,7 +35,16 @@ class SignalBuffer {
     // for this reason we must use socket_write() here directly.
     //   socket buffers are 8k in size, so we are very unlikely to fail
     //   notifying here, unless we manage to pile up 8k in unprocessed
-    //   signals, lmao.
+    //   signals, lmao. (which we could deal with by storing these in
+    //   a set and coalescing, just like linux does).
+    //
+    // note: signals handlers will not be called in a nested manner.
+    //   if a signal comes in while a signal handler is running, that
+    //   signal will be saved in the pending set, and its handler will
+    //   be invoked once the current handler is done. multiple invocations
+    //   of the same signal are coalesced.
+    // result: handlers do not need to worry about concurrency, they are
+    //   guaranteed to be serialized.
     function handler($signo) {
         $this->sigs[] = $signo;
         socket_write($this->w, '1');
