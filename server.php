@@ -227,11 +227,10 @@ class Session {
         return $line;
     }
 
-    // TODO: handle socket close
     function writer() {
         echo "{$this->name} starting writer\n";
 
-        while (($msg = $this->writech->recv()) !== null) {
+        foreach ($this->writech->recv_iter() as $msg) {
             $this->write($msg);
         }
 
@@ -284,6 +283,6 @@ class Session {
         }
         $this->closed = true;
         socket_close($this->sock);
-        $this->writech->send(null);
+        $this->writech->close();
     }
 }

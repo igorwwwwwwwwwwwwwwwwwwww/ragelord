@@ -24,8 +24,6 @@ class EngineState {
 EngineState::$fibers = new \WeakMap();
 EngineState::$pending_sleep_heap = new \SplMinHeap();
 
-// TODO: remove pending reads and writes on exit
-//       perhaps we can do this via finally block in the functions below.
 function go(callable $f) {
     $fiber = new Fiber($f);
 

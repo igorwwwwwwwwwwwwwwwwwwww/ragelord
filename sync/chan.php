@@ -6,16 +6,17 @@ use Fiber;
 use function ragelord\read;
 use function ragelord\write;
 
-// TODO: buffered, i.e. block on max size or exception
+// TODO: buffered, i.e. block on max size or exception.
+//         perhaps caller can indicate a preference. e.g. send_noblock vs send_block.
 // note: we assume a single receiver
-// we cannot directly resume from a signal handler, so we create a socket pair indirection,
-//   because apparently that's ok.
+
 class Chan {
     function __construct(
         public $buf = [],
         public $waiter = null,
         public $r = null,
         public $w = null,
+        public $closed = false,
     ) {
         $rw = [];
         if (!socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $rw)) {
@@ -26,13 +27,18 @@ class Chan {
         socket_set_nonblock($this->w);
     }
 
+    // we cannot directly resume a fiber from a signal handler
+    // so we create a socket pair to resume via event loop instead.
     function send($msg) {
         $this->buf[] = $msg;
-        $this->notify();
+        socket_write($this->w, '1');
     }
 
-    // TODO: iterator/generator
     function recv() {
+        if ($this->closed && count($this->buf) === 0) {
+            return null;
+        }
+
         while (count($this->buf) === 0) {
             $buf = null;
             read($this->r, $buf, 1);
@@ -41,7 +47,16 @@ class Chan {
         return array_shift($this->buf);
     }
 
-    function notify() {
+    // null represents channel close
+    function recv_iter() {
+        while (($msg = $this->recv()) !== null) {
+            yield $msg;
+        }
+    }
+
+    function close() {
+        $this->closed = true;
+        $this->buf[] = null;
         socket_write($this->w, '1');
     }
 }
