@@ -231,7 +231,7 @@ class Session {
     function writer() {
         echo "{$this->name} starting writer\n";
 
-        foreach ($this->writech->recv_iter() as $msg) {
+        foreach ($this->writech as $msg) {
             $this->write($msg);
         }
 

@@ -24,7 +24,7 @@ go(function () use ($sigbuf) {
     $canceled = false;
 
     go(function () use ($sigbuf, &$server_fibers, &$canceled) {
-        foreach ($sigbuf->ch->recv_iter() as $signo) {
+        foreach ($sigbuf->ch as $signo) {
             printf("received signal: %s\n", signo_name($signo));
             switch ($signo) {
                 case SIGINT: // fallthru

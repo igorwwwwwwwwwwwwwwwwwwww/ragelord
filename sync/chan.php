@@ -8,9 +8,29 @@ use function ragelord\write;
 
 // TODO: buffered, i.e. block on max size or exception.
 //         perhaps caller can indicate a preference. e.g. send_noblock vs send_block.
-// note: we assume a single receiver
+//       alternatively, we can always block and require caller to keep track of
+//         pending size, and error out on its own.
+//       the tricky bit here is: we want to cancel the receiver if it is not consuming
+//         fast enough.
+//       perhaps we can do something along the lines of:
+//
+//       broadcast:
+//         select {
+//           case ch->send(msg):
+//             // success
+//           default:
+//             // consumer is too slow, buffer full
+//             cancel writer
+//         }
+//
+//       writer:
+//         foreach (ch as msg) {
+//           check cancel
+//           write(msg);
+//         }
 
-class Chan {
+// note: we assume a single receiver
+class Chan implements \IteratorAggregate {
     function __construct(
         public $buf = [],
         public $waiter = null,
@@ -47,13 +67,13 @@ class Chan {
         return array_shift($this->buf);
     }
 
-    // null represents channel close
-    function recv_iter() {
+    function getIterator(): \Traversable {
         while (($msg = $this->recv()) !== null) {
             yield $msg;
         }
     }
 
+    // null represents channel close
     function close() {
         $this->closed = true;
         $this->buf[] = null;
