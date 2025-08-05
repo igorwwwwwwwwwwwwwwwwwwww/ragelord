@@ -22,9 +22,8 @@ $sigbuf->bottom_half();
 // TODO: implement gracceful termination
 go(function () use ($sigbuf) {
     $server_fibers = [];
-    $canceled = false;
 
-    go(function () use ($sigbuf, &$server_fibers, &$canceled) {
+    go(function () use ($sigbuf, &$server_fibers) {
         foreach ($sigbuf->ch as $signo) {
             printf("received signal: %s\n", signo_name($signo));
             switch ($signo) {
@@ -33,7 +32,6 @@ go(function () use ($sigbuf) {
                     foreach ($server_fibers as $fiber) {
                         $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
                     }
-                    $canceled = true;
                     return;
                 case SIGINFO:
                     engine_print_backtrace();
@@ -43,16 +41,10 @@ go(function () use ($sigbuf) {
         }
     });
 
-    // TODO: nicer cancel mechanism, perhaps via some context / channel
     $server_socks = [
-        listen_retry(fn () => listen4('127.0.0.1', 6667), $canceled),
-        listen_retry(fn () => listen6('::1', 6667), $canceled),
+        listen4('127.0.0.1', 6667),
+        listen6('::1', 6667),
     ];
-    echo "ready\n";
-
-    if ($canceled) {
-        return;
-    }
 
     $server = new ServerState();
     foreach ($server_socks as $server_sock) {
