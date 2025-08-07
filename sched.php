@@ -186,7 +186,7 @@ function event_loop() {
         [$seconds, $micros] = time_from_nanos($select_timeout);
 
         if (debug_enabled('sched')) {
-            echo color(Color::GRAY, sprintf("select read=%d write=%d timeout=%f ... ", count($read), count($write), $select_timeout / TIME_NANOSECONDS));
+            echo Color::GRAY->colorize(sprintf("select read=%d write=%d timeout=%f ... ", count($read), count($write), $select_timeout / TIME_NANOSECONDS));
         }
 
         $changed = 0;
@@ -209,13 +209,12 @@ function event_loop() {
         }
 
         if ($changed === 0 && debug_enabled('sched')) {
-
-            echo color(Color::GRAY, sprintf("actual=%f changed=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed));
+            echo Color::GRAY->colorize(sprintf("actual=%f changed=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed));
         }
 
         if ($changed > 0) {
             if (debug_enabled('sched')) {
-                echo color(Color::GRAY, sprintf("actual=%f changed=%d read=%d write=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed, count($read), count($write)));
+                echo Color::GRAY->colorize(sprintf("actual=%f changed=%d read=%d write=%d\n", $time_in_slect / TIME_NANOSECONDS, $changed, count($read), count($write)));
             }
 
             foreach ($read as $sock) {

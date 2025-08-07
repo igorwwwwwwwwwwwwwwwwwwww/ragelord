@@ -12,8 +12,8 @@ enum Color: int {
     case CYAN    = 36;
     case WHITE   = 37;
     case GRAY    = 90;
-}
 
-function color($color, $str) {
-    return sprintf("\033[%dm%s\033[%dm", $color->value, $str, Color::RESET->value);
+    function colorize($str) {
+        return sprintf("\033[%dm%s\033[%dm", $this->value, $str, self::RESET->value);
+    }
 }
