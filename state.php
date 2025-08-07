@@ -77,6 +77,26 @@ class ServerState {
         unset($this->users[$user->nick]);
     }
 
+    function nick($user, $newNick) {
+        if (isset($this->users[$newNick])) {
+            throw new \RuntimeException('nick already exists');
+        }
+        $this->users[$newNick] = $user;
+        unset($this->users[$user->nick]);
+
+        foreach ($this->channels as $channel) {
+            if (isset($channel->members[$user->nick])) {
+                $channel->members[$newNick] = $user;
+                unset($channel->members[$user->nick]);
+            }
+        }
+
+        foreach ($this->users as $otherUser) {
+            $otherUser->sess->write_msg('NICK', [$newNick], $user->nick);
+        }
+        $user->nick = $newNick;
+    }
+
     function join($user, $chan_name) {
         $this->channels[$chan_name] ??= new Channel($chan_name);
         $this->channels[$chan_name]->join($user);

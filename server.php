@@ -125,6 +125,12 @@ class Session {
                             $this->write_msg('366', [$user->nick, $channel->name, 'End of /NAMES list']);
                         }
                         break;
+                    case 'NICK':
+                        //     Command: NICK
+                        //  Parameters: <nickname>
+                        $newNick = $msg->params[0];
+                        $this->server->nick($user, $newNick);
+                        break;
                     case 'PART':
                         //      Command: PART
                         //   Parameters: <channel>{,<channel>} [<reason>]
