@@ -172,9 +172,14 @@ class Session {
                             }
                         }
                         break;
+                    case 'MODE':
+                        //     Command: MODE
+                        //  Parameters: <target> [<modestring> [<mode arguments>...]]
+                        // TODO: Implement
+                        break;
                     // TODO: NOTICE
                     // TODO: TOPIC, NAMES, LIST, INVITE, KICK
-                    // TODO: MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO, MODE
+                    // TODO: MOTD, VERSION, ADMIN, LUSERS, TIME, STATS, HELP, INFO
                     // TODO: WHO, WHOIS, WHOWAS
                     // TODO: KILL, REHASH, RESTART, SQUIT
                     // TODO: AWAY, LINKS, USERHOST, WALLOPS
