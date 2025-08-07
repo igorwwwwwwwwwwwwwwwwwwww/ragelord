@@ -19,6 +19,7 @@ class Session {
         public $name,
         public $sock,
         public ServerState $server,
+        public ServerState $server,
         public $writech = new sync\Chan(),
     ) {}
 
@@ -288,6 +289,7 @@ class Session {
         }
     }
 
+    // TODO: actually we want to socket_shutdown() here
     function close() {
         if ($this->closed || $this->closing) {
             return;
