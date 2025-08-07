@@ -34,14 +34,11 @@ class Message {
         $out .= $this->cmd;
         $out .= ' ';
 
-        for ($i = 0; $i < count($this->params); $i++) {
-            if ($i === count($this->params)-1) {
-                $out .= ':' . $this->params[$i];
-                break;
-            }
+        for ($i = 0, $to = count($this->params) - 1; $i < $to; $i++) {
             $out .= $this->params[$i];
             $out .= ' ';
         }
+        $this->params && ($out .= ':' . $this->params[$i]);
 
         return $out;
     }
