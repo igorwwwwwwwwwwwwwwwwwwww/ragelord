@@ -19,7 +19,6 @@ class Session {
         public $name,
         public $sock,
         public ServerState $server,
-        public ServerState $server,
         public $writech = new sync\Chan(),
     ) {}
 
