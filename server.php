@@ -18,7 +18,7 @@ class Session {
     function __construct(
         public $name,
         public $sock,
-        public ServerState $server,
+        public ServerState $state,
         public $writech = new sync\Chan(),
     ) {}
 
@@ -65,7 +65,7 @@ class Session {
                 }
             }
 
-            $user = $this->server->register($username, $nick, $this);
+            $user = $this->state->register($username, $nick, $this);
 
             // TODO: NICK: check if nick is available, adjust it if not
             // TODO: NICK: allow nick to change
@@ -98,6 +98,12 @@ class Session {
                         //   Parameters: <token>
                         $this->write_msg('PONG', [$user->nick, $msg->params[0] ?? null]);
                         break;
+                    case 'NICK':
+                        //     Command: NICK
+                        //  Parameters: <nickname>
+                        $newNick = $msg->params[0];
+                        $this->state->nick($user, $newNick);
+                        break;
                     case 'QUIT':
                         //     Command: QUIT
                         //  Parameters: [<reason>]
@@ -109,7 +115,7 @@ class Session {
                         //   Parameters: <channel>{,<channel>} [<key>{,<key>}]
                         //   Alt Params: 0
                         if ($msg->params === ['0']) {
-                            $this->server->part_all($user);
+                            $this->state->part_all($user);
                             // TODO: send part responses for each parted channel
                             break;
                         }
@@ -118,10 +124,11 @@ class Session {
                         $chankeys = array_combine($channels, $keys);
                         foreach ($chankeys as $chan_name => $key) {
                             // TODO: handle key param
-                            $channel = $this->server->join($user, $chan_name);
-                            $this->write_msg('JOIN', [$user->nick, $channel->name]);
+                            $channel = $this->state->join($user, $chan_name);
                             if ($channel->topic) {
                                 $this->write_msg('332', [$user->nick, $channel->name, $channel->topic]);
+                            } else {
+                                $this->write_msg('331', [$user->nick, $channel->name, 'No topic is set']);
                             }
                             foreach ($channel->members as $member) {
                                 $this->write_msg('353', [$user->nick, $channel->symbol, $channel->name, $member->nick]);
@@ -129,19 +136,13 @@ class Session {
                             $this->write_msg('366', [$user->nick, $channel->name, 'End of /NAMES list']);
                         }
                         break;
-                    case 'NICK':
-                        //     Command: NICK
-                        //  Parameters: <nickname>
-                        $newNick = $msg->params[0];
-                        $this->server->nick($user, $newNick);
-                        break;
                     case 'PART':
                         //      Command: PART
                         //   Parameters: <channel>{,<channel>} [<reason>]
                         $channels = explode(',', $msg->params[0] ?? '');
                         $reason = $msg->params[1] ?? null;
                         foreach ($channels as $chan_name) {
-                            $this->server->part($user, $chan_name, $reason);
+                            $this->state->part($user, $chan_name, $reason);
                             $this->write_msg('PART', [$user->nick, $chan_name, $reason]);
                         }
                         break;
@@ -151,7 +152,7 @@ class Session {
                         $chan_name = $msg->params[0];
                         $topic = $msg->params[1] ?? null;
                         if ($topic === null) {
-                            $topic = $this->server->get_topic($chan_name);
+                            $topic = $this->state->get_topic($chan_name);
                             // TODO: RPL_TOPICWHOTIME
                             if ($topic) {
                                 $this->write_msg('332', [$user->nick, $chan_name, $topic]);
@@ -160,7 +161,7 @@ class Session {
                             }
                         } else {
                             // broadcast happens internally
-                            $this->server->set_topic($chan_name, $topic);
+                            $this->state->set_topic($chan_name, $topic);
                         }
                         break;
                     case 'PRIVMSG':
@@ -170,16 +171,31 @@ class Session {
                         $text = $msg->params[1];
                         foreach ($targets as $target) {
                             if ($target[0] === '#' || $target[0] === '&') {
-                                $this->server->privmsg_channel($user, $target, $text);
+                                $this->state->privmsg_channel($user, $target, $text);
                             } else {
-                                $this->server->privmsg($user, $target, $text);
+                                $this->state->privmsg($user, $target, $text);
                             }
                         }
                         break;
                     case 'MODE':
                         //     Command: MODE
                         //  Parameters: <target> [<modestring> [<mode arguments>...]]
-                        // TODO: Implement
+                        $target = $msg->params[0];
+                        $modestring = $msg->params[1] ?? null;
+                        if ($target[0] === '#' || $target[0] === '&') {
+                            // TODO: implement channel modes
+                        } else {
+                            if ($target !== $user->nick) {
+                                $this->write_msg('502', ['Cant change mode for other users']);
+                                break;
+                            }
+                            if (!$modestring) {
+                                $modes = $this->state->users[$user]->mode;
+                                $this->write_msg('221', [$user->nick, $modes]);
+                                break;
+                            }
+                            // TODO: implement setting user modes
+                        }
                         break;
                     // TODO: NOTICE
                     // TODO: TOPIC, NAMES, LIST, INVITE, KICK
@@ -200,7 +216,7 @@ class Session {
         } finally {
             echo "{$this->name} client terminated\n";
             if ($user) {
-                $this->server->unregister($user);
+                $this->state->unregister($user);
             }
         }
     }

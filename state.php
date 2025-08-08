@@ -7,6 +7,7 @@ class User {
         public $name,
         public $nick,
         public $sess, // instead of session, pass something smaller, like a writer; maybe decouple this somehow
+        public $mode = [],
     ) {}
 }
 
@@ -21,11 +22,11 @@ class Channel {
 
     // TODO: membership flags, e.g. op
     function join($user) {
+        $this->members[$user->nick] = $user;
+
         foreach ($this->members as $member) {
             $member->sess->write_msg('JOIN', [$this->name], $user->nick);
         }
-
-        $this->members[$user->nick] = $user;
     }
 
     function part($user, $reason = null) {
