@@ -192,7 +192,7 @@ function event_loop() {
         $changed = 0;
         try {
             $time_before_slect = hrtime(true);
-            if ($read && count($read) || $write && count($write) || $except && count($except)) {
+            if ($read || $write || $except) {
                 $changed = socket_select($read, $write, $except, $seconds, $micros);
             } else {
                 usleep(($seconds * TIME_MICROSECONDS) + $micros);
