@@ -57,7 +57,11 @@ class Session {
                         // ignore for now
                         break;
                     default:
-                        throw new \RuntimeException(sprintf('invalid cmd, expected one of %s, got: %s', json_encode($reg_cmds), $msg->cmd));
+                        throw new \RuntimeException(sprintf(
+                            'invalid cmd, expected one of %s, got: %s',
+                            '[USER, PASS, NICK, CAP]',
+                            $msg->cmd
+                        ));
                 }
             }
 
