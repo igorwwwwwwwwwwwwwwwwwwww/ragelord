@@ -17,7 +17,10 @@ $sigbuf = new SignalBuffer();
 pcntl_async_signals(true);
 pcntl_signal(SIGINT, [$sigbuf, 'handler']);
 pcntl_signal(SIGTERM, [$sigbuf, 'handler']);
-pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
+if (defined('SIGINFO')) {
+    // macos only
+    pcntl_signal(SIGINFO, [$sigbuf, 'handler']);
+}
 $sigbuf->bottom_half();
 
 // TODO: implement gracceful termination
@@ -43,8 +46,10 @@ go(function () use ($sigbuf) {
     });
 
     $server_socks = [
-        listen4('127.0.0.1', 6667),
-        listen6('::1', 6667),
+        // listen4('127.0.0.1', 6667),
+        // listen6('::1', 6667),
+        listen4('0.0.0.0', 6667),
+        // listen6('::', 6667),
     ];
 
     $server = new ServerState();
