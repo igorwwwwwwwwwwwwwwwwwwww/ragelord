@@ -10,7 +10,7 @@ const SELECT_TIMEOUT = 10 * TIME_NANOSECONDS;
 
 // NOTE: only one fiber can be waiting on a socket
 class EngineState {
-    public static $fibers;
+    public static \WeakMap $fibers;
     public static $fiber_state = [];
 
     public static $pending_read = [];
@@ -19,7 +19,7 @@ class EngineState {
     public static $pending_write = [];
     public static $pending_write_waiter = [];
 
-    public static $pending_sleep_heap;
+    public static \SplMinHeap $pending_sleep_heap;
 }
 EngineState::$fibers = new \WeakMap();
 EngineState::$pending_sleep_heap = new \SplMinHeap();
