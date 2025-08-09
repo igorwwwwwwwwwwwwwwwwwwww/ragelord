@@ -25,7 +25,7 @@ function send_sockets(string $socket_path, array $socket_tag_pairs, $context = n
             throw new RuntimeException("Failed to export Socket to stream for FD $fd");
         }
 
-        $stream_resources[] = $socket_obj;
+        $stream_resources[] = $stream;
         $tags[] = $tag;
     }
 
@@ -221,14 +221,7 @@ function receive_sockets(string $socket_path): array {
     var_dump('recvmsg', $data['control'][0]['data']);
 
     $sock_tag_pairs = [];
-    foreach ($data['control'][0]['data'] as $i => $stream) {
-        // this is needed because socket_import_stream() claims the received stream is of type STDIO
-        // $meta = stream_get_meta_data($stream);
-        // $fd = intval($meta['stream_id'] ?? $stream);
-        // $fd_stream = fopen("php://fd/$fd", 'r');
-        // $sock  = socket_import_stream($fd_stream);
-
-        $sock = socket_import_stream($stream);
+    foreach ($data['control'][0]['data'] as $i => $sock) {
         $sock_tag_pairs[] = [$sock, $tags[$i]];
     }
 
