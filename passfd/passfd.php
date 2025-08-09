@@ -1,6 +1,6 @@
 <?php
 
-namespace ragelord\ffi;
+namespace ragelord\passfd;
 
 use RuntimeException;
 use InvalidArgumentException;
@@ -207,8 +207,8 @@ function receive_sockets(string $socket_path): array {
 
     $tags_total_size = 4 + $tags_json_len;
     $data = [
-        "buffer_size" => $tags_total_size,
-        "controllen" => socket_cmsg_space(SOL_SOCKET, SCM_RIGHTS, 256),
+        'buffer_size' => $tags_total_size,
+        'controllen'  => socket_cmsg_space(SOL_SOCKET, SCM_RIGHTS, 256),
     ];
     $tags_result = socket_recvmsg($client_sock, $data, 0);
 
@@ -236,7 +236,7 @@ function receive_sockets(string $socket_path): array {
         throw new RuntimeException("Failed to decode tags: '$tags_str' (length: " . strlen($tags_str) . ", JSON error: $json_error)");
     }
 
-    $fd_count = count($data["control"][0]['data']);
+    $fd_count = count($data['control'][0]['data']);
 
     if ($fd_count <= 0) {
         throw new RuntimeException("No file descriptors received");
