@@ -5,12 +5,30 @@ namespace ragelord\passfd;
 use RuntimeException;
 use InvalidArgumentException;
 
+function first($it) {
+    foreach ($it as $v) {
+        return $v;
+    }
+}
+
+function buf_read_bytes($buf, $len) {
+    $bytes = substr($buf, 0, $len);
+    $rest = substr($buf, $len);
+    return [$bytes, $rest];
+}
+
+function decode_uint32($bytes) {
+    return first(unpack('V', $bytes));
+}
+
+function encode_uint32($num) {
+    return pack('V', $num);
+}
+
 function send_sockets(string $socket_path, array $socket_tag_pairs, $context = null): bool {
     if (count($socket_tag_pairs) === 0) {
         throw new InvalidArgumentException("FD-tag pairs array cannot be empty");
     }
-
-    $fd_count = count($socket_tag_pairs);
 
     $stream_resources = [];
     $tags = [];
@@ -32,27 +50,16 @@ function send_sockets(string $socket_path, array $socket_tag_pairs, $context = n
     $sock = socket_create(AF_UNIX, SOCK_STREAM, 0);
     socket_connect($sock, $socket_path);
 
-    // Step 1: Send context as a separate message
     $context_json = json_encode($context);
-    $context_len = strlen($context_json);
-
-    // Pack length as 4 bytes little-endian, then copy JSON data
-    $packed_data = pack('V', $context_len) . $context_json;
-
-    // Send context message first
-    socket_sendmsg($sock, ['iov' => [$packed_data]]);
-
-    // Step 2: Send tags with file descriptors
     $tags_json = json_encode($tags);
-    $tags_len = strlen($tags_json);
-
-    // Pack length as 4 bytes little-endian, then copy JSON data
-    $packed_tags_data = pack('V', $tags_len) . $tags_json;
-
-    var_dump('sendmsg', $stream_resources);
 
     socket_sendmsg($sock, [
-        'iov' => [$packed_tags_data],
+        'iov' => [
+            encode_uint32(strlen($context_json)),
+            $context_json,
+            encode_uint32(strlen($tags_json)),
+            $tags_json,
+        ],
         'control' => [[
             'level' => SOL_SOCKET,
             'type' => SCM_RIGHTS,
@@ -86,121 +93,42 @@ function receive_sockets(string $socket_path): array {
         throw new RuntimeException("socket_accept() failed: $error");
     }
 
-    // Step 1: Receive context message - peek at length first, then allocate exact buffer
-    $peek_data = '';
-    $peek_result = socket_recv($client_sock, $peek_data, 4, MSG_PEEK);
-
-    if ($peek_result === false) {
-        $error = socket_strerror(socket_last_error($client_sock));
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("socket_recv() failed for context length peek: $error");
-    }
-
-    if (strlen($peek_data) < 4) {
-        // TODO: do this in finally
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("Cannot peek context length: got " . strlen($peek_data) . " bytes, expected 4");
-    }
-
-    // Extract context length from peek
-    $context_json_len = unpack('V', $peek_data)[1];
-
-    // Now receive the complete context message using socket_recv
-    $context_total_size = 4 + $context_json_len;
-    $context_data = '';
-    $context_result = socket_recv($client_sock, $context_data, $context_total_size, 0);
-
-    if ($context_result === false) {
-        $error = socket_strerror(socket_last_error($client_sock));
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("socket_recv() failed for context: $error");
-    }
-
-    if (strlen($context_data) < $context_total_size) {
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("Received context message incomplete: got " . strlen($context_data) . " bytes, expected $context_total_size");
-    }
-
-    // Extract context JSON data starting from byte 4
-    $context_str = substr($context_data, 4, $context_json_len);
-
-    $context = json_decode($context_str, true);
-    if ($context === null) {
-        $json_error = json_last_error_msg();
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("Failed to decode context: '$context_str' (length: " . strlen($context_str) . ", JSON error: $json_error)");
-    }
-
-    // Step 2: Receive tags and file descriptors message - peek at length first
-    $tags_peek_data = '';
-    $tags_peek_result = socket_recv($client_sock, $tags_peek_data, 4, MSG_PEEK);
-
-    if ($tags_peek_result === false) {
-        $error = socket_strerror(socket_last_error($client_sock));
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("socket_recv() failed for tags length peek: $error");
-    }
-
-    if (strlen($tags_peek_data) < 4) {
-        socket_close($client_sock);
-        socket_close($listen_sock);
-        if (file_exists($socket_path)) {
-            unlink($socket_path);
-        }
-        throw new RuntimeException("Cannot peek tags length: got " . strlen($tags_peek_data) . " bytes, expected 4");
-    }
-
-    // Extract tags length from peek
-    $tags_json_len = unpack('V', $tags_peek_data)[1];
-
-    $tags_total_size = 4 + $tags_json_len;
+    // maximum context+tags: 4k
+    // maximum fd count: 256
+    // TODO: validate on send
     $data = [
-        'buffer_size' => $tags_total_size,
+        'buffer_size' => 4096,
         'controllen'  => socket_cmsg_space(SOL_SOCKET, SCM_RIGHTS, 256),
     ];
-    $tags_result = socket_recvmsg($client_sock, $data, 0);
+    $result = socket_recvmsg($client_sock, $data, 0);
 
+    // TODO: do this in finally?
     socket_close($client_sock);
     socket_close($listen_sock);
     if (file_exists($socket_path)) {
         unlink($socket_path);
     }
 
-    if ($tags_result < 0) {
+    if ($result < 0) {
         $error = socket_strerror(socket_last_error($client_sock));
         throw new RuntimeException("recvmsg() failed for tags and fds: $error");
     }
+    // TODO: check TRUNC flag
 
-    if ($tags_result < $tags_total_size) {
-        throw new RuntimeException("Received tags message incomplete: got $tags_result bytes, expected $tags_total_size");
+    $buf = $data['iov'][0];
+    [$bytes, $buf] = buf_read_bytes($buf, 4);
+    $context_len = decode_uint32($bytes);
+    [$context_str, $buf] = buf_read_bytes($buf, $context_len);
+
+    [$bytes, $buf] = buf_read_bytes($buf, 4);
+    $tags_len = decode_uint32($bytes);
+    [$tags_str, $buf] = buf_read_bytes($buf, $tags_len);
+
+    $context = json_decode($context_str, true);
+    if ($context === null) {
+        $json_error = json_last_error_msg();
+        throw new RuntimeException("Failed to decode context: '$context_str' (length: " . strlen($context_str) . ", JSON error: $json_error)");
     }
-
-    // Extract tags JSON data starting from byte 4
-    $tags_str = substr($data['iov'][0], 4);
 
     $tags = json_decode($tags_str, true);
     if ($tags === null) {
@@ -209,16 +137,12 @@ function receive_sockets(string $socket_path): array {
     }
 
     $fd_count = count($data['control'][0]['data']);
-
     if ($fd_count <= 0) {
         throw new RuntimeException("No file descriptors received");
     }
-
     if (count($tags) !== $fd_count) {
         throw new RuntimeException("Mismatch between number of tags (" . count($tags) . ") and file descriptors ($fd_count)");
     }
-
-    var_dump('recvmsg', $data['control'][0]['data']);
 
     $sock_tag_pairs = [];
     foreach ($data['control'][0]['data'] as $i => $sock) {
