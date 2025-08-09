@@ -17,7 +17,13 @@ function test_tagged_socket_handover() {
     $socket_tag_pairs = [
         [$socket1, 'web_server'],
         [$socket2, 'dns_client'],
-        [$socket3, 'ipc_socket']
+        [$socket3, 'ipc_socket'],
+    ];
+
+    $sockets = [
+        $socket1,
+        $socket2,
+        $socket3,
     ];
 
     // Fork to test handover between processes
@@ -66,6 +72,7 @@ function test_tagged_socket_handover() {
             }
 
             $result = passfd\send_sockets($socket_path, $socket_tag_pairs, $context);
+            // $result = passfd\send_sockets2($socket_path, $sockets, $context);
 
             if (!$result) {
                 throw new RuntimeException("Failed to send named sockets");
