@@ -14,10 +14,10 @@ function test_tagged_socket_handover() {
     $socket2 = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     $socket3 = socket_create(AF_UNIX, SOCK_STREAM, 0);
 
-    $sockets = [
-        $socket1,
-        $socket2,
-        $socket3,
+    $socket_tag_pairs = [
+        [$socket1, 'web_server'],
+        [$socket2, 'dns_client'],
+        [$socket3, 'ipc_socket']
     ];
 
     // Fork to test handover between processes
@@ -60,8 +60,16 @@ function test_tagged_socket_handover() {
             // Give child time to start listening
             usleep(100000); // 100ms
 
-            echo "[Parent] Sending " . count($sockets) . " tagged sockets...\n";
-            $result = passfd\send_sockets($socket_path, $sockets);
+            echo "[Parent] Sending " . count($socket_tag_pairs) . " tagged sockets...\n";
+            foreach ($socket_tag_pairs as [$socket, $tag]) {
+                echo "[Parent]   - $tag\n";
+            }
+
+            $result = passfd\send_sockets($socket_path, $socket_tag_pairs, $context);
+
+            if (!$result) {
+                throw new RuntimeException("Failed to send named sockets");
+            }
 
             echo "[Parent] ✓ Tagged sockets sent successfully!\n";
 
