@@ -2,6 +2,8 @@
 
 namespace ragelord\ffi;
 
+use FFI;
+
 function socket_to_fd(\Socket $socket): ?int {
     static $ffi = null;
     if (!$ffi) {
@@ -9,7 +11,7 @@ function socket_to_fd(\Socket $socket): ?int {
         $header = "typedef int{$bitSize}_t zend_long;\n";
         $header .= "typedef uint{$bitSize}_t zend_ulong;\n";
         $header .= "typedef int{$bitSize}_t zend_off_t;\n";
-        $header .= file_get_contents(__DIR__ . "/php_api_generated.h");
+        $header .= file_get_contents(__DIR__ . "/php_api.h");
         $ffi = FFI::cdef($header);
     }
 
