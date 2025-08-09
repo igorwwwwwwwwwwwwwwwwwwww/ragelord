@@ -8,8 +8,14 @@ require 'proto.php';
 require 'server.php';
 require 'sched.php';
 require 'sync/chan.php';
+require 'passfd/passfd.php';
 require 'signal.php';
 require 'color.php';
+
+const UPGRADE_LOCK_FILE = __DIR__.'/upgrade.lock';
+const UPGRADE_SOCK_FILE = __DIR__.'/upgrade.sock';
+
+class UpgradeInitiatedException extends \Exception {}
 
 set_error_handler(exception_error_handler(...));
 
@@ -27,44 +33,155 @@ $sigbuf->bottom_half();
 go(function () use ($sigbuf) {
     $server_fibers = [];
 
-    go(function () use ($sigbuf, &$server_fibers) {
-        foreach ($sigbuf->ch as $signo) {
-            printf("received signal: %s\n", signo_name($signo));
-            switch ($signo) {
-                case SIGINT: // fallthru
-                case SIGTERM:
-                    foreach ($server_fibers as $fiber) {
-                        $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
-                    }
-                    return;
-                case SIGINFO:
+    $sigbuf_fiber = go(function () use ($sigbuf, &$server_fibers) {
+        try {
+            foreach ($sigbuf->ch as $signo) {
+                printf("received signal: %s\n", signo_name($signo));
+                if (defined('SIGINFO') && $signo === SIGINFO) {
                     engine_print_backtrace();
                     debug_print_backtrace();
-                    break;
+                    continue;
+                }
+                switch ($signo) {
+                    case SIGINT: // fallthru
+                    case SIGTERM:
+                        foreach ($server_fibers as $fiber) {
+                            $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
+                        }
+                        return;
+                }
             }
+        } catch (UpgradeInitiatedException $e) {
+            // noop
         }
     });
 
-    $server_socks = [
-        // listen4('127.0.0.1', 6667),
-        // listen6('::1', 6667),
-        listen4('0.0.0.0', 6667),
-        // listen6('::', 6667),
-    ];
+    $upgrade_lock = null;
+    if (file_exists(UPGRADE_SOCK_FILE) && !file_exists(UPGRADE_LOCK_FILE)) {
+        unlink(UPGRADE_SOCK_FILE);
+    }
+    if (file_exists(UPGRADE_LOCK_FILE)) {
+        $fp = fopen(UPGRADE_LOCK_FILE, 'r+');
+        if (flock($fp, LOCK_EX | LOCK_NB)) {
+            // lock file exists but is not held, let's delete it
+            unlink(UPGRADE_LOCK_FILE);
+            unlink(UPGRADE_SOCK_FILE);
+        }
+        fclose($fp);
+        $fp = null;
+    }
 
-    $server = new ServerState();
+    if (file_exists(UPGRADE_SOCK_FILE)) {
+        // upgrade: receive
+        if (debug_enabled('upgrade')) {
+            printf(Color::YELLOW->colorize("upgrade: receive\n"));
+        }
+
+        $upgrade_client_sock = connect_unix(UPGRADE_SOCK_FILE);
+        [$sockets, $context] = passfd\receive_sockets($upgrade_client_sock);
+
+        $upgrade_sock = null;
+        $server_socks = [];
+        $client_socks = new \WeakMap();
+
+        foreach ($sockets as [$sock, $tag]) {
+            switch ($tag) {
+                case 'upgrade_lock':
+                    $upgrade_lock = $sock;
+                case 'upgrade':
+                    $upgrade_sock = $sock;
+                    break;
+                case 'server':
+                    $server_socks[] = $sock;
+                    break;
+                case 'client':
+                    $client_socks[spl_object_id($sock)] = $sock;
+                    // TODO: set up sessions
+                    break;
+            }
+        }
+        // seed state from context
+        $state = unserialize($context, ['allowed_classes' => [
+            'ragelord\ServerState',
+            'ragelord\Channel',
+            'ragelord\User',
+        ]]);
+
+        // TODO: create sessions, register them in the state
+    } else {
+        // clean init
+        if (debug_enabled('upgrade')) {
+            printf(Color::YELLOW->colorize("upgrade: init\n"));
+        }
+
+        $upgrade_lock = fopen(UPGRADE_LOCK_FILE, 'c');
+        if (!flock($upgrade_lock, LOCK_EX | LOCK_NB)) {
+            throw new \RuntimeException('could not obtain upgrade lock');
+        }
+
+        $upgrade_sock = listen_unix(UPGRADE_SOCK_FILE);
+        $server_socks = [
+            listen4('127.0.0.1', 6667),
+            listen6('::1', 6667),
+            // listen4('0.0.0.0', 6667),
+        ];
+        $client_socks = new \WeakMap();
+        $state = new ServerState();
+    }
+
+    // upgrade: send
+    $server_fibers[] = go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $server_socks, $client_socks, $state) {
+        while (true) {
+            // TODO: why does accept fail here sometimes?
+            $upgrade_client_sock = accept($upgrade_sock);
+            if ($upgrade_client_sock) {
+                break;
+            }
+        }
+
+        if (debug_enabled('upgrade')) {
+            printf(Color::YELLOW->colorize("upgrade: send\n"));
+        }
+
+        $sigbuf_fiber->throw(new UpgradeInitiatedException());
+        foreach ($server_socks as $server_sock) {
+            pause($server_sock);
+        }
+
+        // TODO: pause client sockets
+
+        $sockets = [];
+        $sockets[] = [$upgrade_lock, 'upgrade_lock'];
+        $sockets[] = [$upgrade_sock, 'upgrade'];
+        foreach ($server_socks as $server_sock) {
+            $sockets[] = [$server_sock, 'server'];
+        }
+        foreach ($client_socks as $client_sock) {
+            $sockets[] = [$client_sock, 'client'];
+        }
+
+        // TODO: encode state version for compatibility
+        $context = serialize($state);
+
+        passfd\send_sockets($upgrade_client_sock, $sockets, $context);
+        exit(0); // TODO: make this exit cleanly
+    });
+
     foreach ($server_socks as $server_sock) {
-        $server_fibers[] = go(function () use ($server, $server_sock) {
+        $server_fibers[] = go(function () use ($server_sock, $state) {
             try {
                 while (true) {
-                    $sock = accept($server_sock);
-                    go(function () use ($server, $sock) {
-                        $name = socket_name($sock);
-                        $sess = new Session($name, $sock, $server);
+                    $client_sock = accept($server_sock);
+                    $client_socks[spl_object_id($client_sock)] = $client_sock;
+                    go(function () use ($state, $client_sock) {
+                        $name = socket_name($client_sock);
+                        $sess = new Session($name, $client_sock, $state);
                         go(fn () => $sess->reader());
                         go(fn () => $sess->writer());
                     });
                 }
+            } catch (UpgradeInitiatedException $e) {
+                // noop
             } finally {
                 socket_close($server_sock);
             }

@@ -6,7 +6,6 @@ class User {
     function __construct(
         public $name,
         public $nick,
-        public $sess, // instead of session, pass something smaller, like a writer; maybe decouple this somehow
         public $mode = [],
     ) {}
 }
@@ -18,14 +17,23 @@ class Channel {
 
     function __construct(
         public $name,
+        public \WeakMap $sessions,
     ) {}
+
+    function __sleep() {
+        return ['topic', 'members', 'symbol', 'name'];
+    }
+
+    function __wakeup() {
+        $this->sessions = new \WeakMap();
+    }
 
     // TODO: membership flags, e.g. op
     function join($user) {
         $this->members[$user->nick] = $user;
 
         foreach ($this->members as $member) {
-            $member->sess->write_msg('JOIN', [$this->name], $user->nick);
+            $this->sessions[$member]->write_msg('JOIN', [$this->name], $user->nick);
         }
     }
 
@@ -36,7 +44,7 @@ class Channel {
         unset($this->members[$user->nick]);
 
         foreach ($this->members as $member) {
-            $member->sess->write_msg('PART', [$this->name, $reason], $user->nick);
+            $this->sessions[$member]->write_msg('PART', [$this->name, $reason], $user->nick);
         }
     }
 
@@ -45,9 +53,9 @@ class Channel {
         foreach ($this->members as $member) {
             // TODO: RPL_TOPICWHOTIME
             if ($topic) {
-                $member->sess->write_msg('332', [$member->nick, $this->name, $topic]);
+                $this->sessions[$member]->write_msg('332', [$member->nick, $this->name, $topic]);
             } else {
-                $member->sess->write_msg('331', [$member->nick, $this->name]);
+                $this->sessions[$member]->write_msg('331', [$member->nick, $this->name]);
             }
         }
     }
@@ -56,12 +64,27 @@ class Channel {
 class ServerState {
     public $users = [];
     public $channels = [];
+    public \WeakMap $sessions;
+
+    function __construct() {
+        $this->sessions = new \WeakMap();
+    }
+
+    function __sleep() {
+        return ['users', 'channels'];
+    }
+
+    function __wakeup() {
+        $this->sessions = new \WeakMap();
+    }
 
     function register($username, $nick, $sess) {
         if (isset($this->users[$nick])) {
             throw new \RuntimeException('nick already exists');
         }
-        $this->users[$nick] = new User($username, $nick, $sess);
+        $user = new User($username, $nick);
+        $this->users[$nick] = $user;
+        $this->sessions[$user] = $sess;
         return $this->users[$nick];
     }
 
@@ -76,6 +99,7 @@ class ServerState {
             }
         }
         unset($this->users[$user->nick]);
+        unset($this->sessions[$user]);
     }
 
     function nick($user, $newNick) {
@@ -85,6 +109,9 @@ class ServerState {
         $this->users[$newNick] = $user;
         unset($this->users[$user->nick]);
 
+        // no bookkeeping in sessions needed because it refers to the
+        // underlying User object which is modified in place
+
         foreach ($this->channels as $channel) {
             if (isset($channel->members[$user->nick])) {
                 $channel->members[$newNick] = $user;
@@ -93,13 +120,13 @@ class ServerState {
         }
 
         foreach ($this->users as $otherUser) {
-            $otherUser->sess->write_msg('NICK', [$newNick], $user->nick);
+            $this->sessions[$otherUser]->write_msg('NICK', [$newNick], $user->nick);
         }
         $user->nick = $newNick;
     }
 
     function join($user, $chan_name) {
-        $this->channels[$chan_name] ??= new Channel($chan_name);
+        $this->channels[$chan_name] ??= new Channel($chan_name, $this->sessions);
         $this->channels[$chan_name]->join($user);
         return $this->channels[$chan_name];
     }
@@ -138,7 +165,8 @@ class ServerState {
             throw new \RuntimeException(sprintf('no such user: %s', $target));
         }
 
-        $this->users[$target]->sess->write_msg('PRIVMSG', [$this->users[$target]->nick, $text], $user->nick);
+        $targetUser = $this->users[$target];
+        $this->sessions[$targetUser]->write_msg('PRIVMSG', [$this->users[$target]->nick, $text], $user->nick);
     }
 
     function privmsg_channel($user, $chan_name, $text) {
@@ -154,7 +182,7 @@ class ServerState {
             if ($member === $user) {
                 continue;
             }
-            $member->sess->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
+            $this->sessions[$member]->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
         }
     }
 }

@@ -56,13 +56,13 @@ class SignalBuffer {
         socket_write($this->w, '1');
     }
 
-    // bottom half is in a Fiber, so we can use read() here.
+    // bottom half is in a Fiber, so we can use recv() here.
     function bottom_half() {
         go(function () {
             while (true) {
                 while (count($this->sigs) === 0) {
                     $buf = null;
-                    read($this->r, $buf, 1);
+                    recv($this->r, $buf, 1);
                 }
 
                 while (($signo = array_shift($this->sigs)) !== null) {

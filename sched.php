@@ -12,6 +12,7 @@ const SELECT_TIMEOUT = 10 * TIME_NANOSECONDS;
 class EngineState {
     public static \WeakMap $fibers;
     public static $fiber_state = [];
+    public static \WeakMap $paused_sockets;
 
     public static $pending_read = [];
     public static $pending_read_waiter = [];
@@ -20,8 +21,10 @@ class EngineState {
     public static $pending_write_waiter = [];
 
     public static \SplMinHeap $pending_sleep_heap;
+
 }
 EngineState::$fibers = new \WeakMap();
+EngineState::$paused_sockets = new \WeakMap();
 EngineState::$pending_sleep_heap = new \SplMinHeap();
 
 function go(callable $f) {
@@ -37,7 +40,7 @@ function go(callable $f) {
 
 // io. call from fiber
 function accept($sock) {
-    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'read';
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'accept';
     EngineState::$pending_read[spl_object_id($sock)] = $sock;
     EngineState::$pending_read_waiter[spl_object_id($sock)] = Fiber::getCurrent();
 
@@ -48,13 +51,16 @@ function accept($sock) {
     unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
 
     $client_sock = socket_accept($sock);
+    if (!$client_sock) {
+        return null;
+    }
     socket_set_nonblock($client_sock);
 
     return $client_sock;
 }
 
-function read($sock, &$buf, $len) {
-    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'read';
+function recv($sock, &$buf, $len) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'recv';
     EngineState::$pending_read[spl_object_id($sock)] = $sock;
     EngineState::$pending_read_waiter[spl_object_id($sock)] = Fiber::getCurrent();
 
@@ -64,7 +70,21 @@ function read($sock, &$buf, $len) {
     unset(EngineState::$pending_read[spl_object_id($sock)]);
     unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
 
-    return socket_recv($sock, $buf, $len, MSG_DONTWAIT);
+    return socket_recv($sock, $buf, $len, 0);
+}
+
+function recvmsg($sock, &$msg) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'recvmsg';
+    EngineState::$pending_read[spl_object_id($sock)] = $sock;
+    EngineState::$pending_read_waiter[spl_object_id($sock)] = Fiber::getCurrent();
+
+    Fiber::suspend();
+
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+    unset(EngineState::$pending_read[spl_object_id($sock)]);
+    unset(EngineState::$pending_read_waiter[spl_object_id($sock)]);
+
+    return socket_recvmsg($sock, $msg);
 }
 
 function write($sock, $buf) {
@@ -79,6 +99,20 @@ function write($sock, $buf) {
     unset(EngineState::$pending_write_waiter[spl_object_id($sock)]);
 
     return socket_write($sock, $buf);
+}
+
+function sendmsg($sock, $msg) {
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'sendmsg';
+    EngineState::$pending_write[spl_object_id($sock)] = $sock;
+    EngineState::$pending_write_waiter[spl_object_id($sock)] = Fiber::getCurrent();
+
+    Fiber::suspend();
+
+    EngineState::$fiber_state[spl_object_id(Fiber::getCurrent())] = 'running';
+    unset(EngineState::$pending_write[spl_object_id($sock)]);
+    unset(EngineState::$pending_write_waiter[spl_object_id($sock)]);
+
+    return socket_sendmsg($sock, $msg);
 }
 
 // NOTE: we are shadowing sleep from stdlib
@@ -97,6 +131,11 @@ function sleep($duration_seconds) {
 
     // no bookkeeping needed here,
     // event loop removes item from heap before resuming.
+}
+
+// prevent socket from being scheduled
+function pause($sock) {
+    EngineState::$paused_sockets[$sock] = true;
 }
 
 function fiber_print_backtrace($fiber, $name) {
@@ -132,6 +171,11 @@ function time_from_nanos($duration_nanos) {
     return [$seconds, $micros];
 }
 
+// supported subsystems
+//   io, io=r, io,w
+//   sched
+//   upgrade
+//   passfd
 function debug_enabled($subsystem) {
     static $flags = null;
     if ($flags === null) {
@@ -148,6 +192,18 @@ function event_loop() {
         $read = array_values(EngineState::$pending_read);
         $write = array_values(EngineState::$pending_write);
         $except = null;
+
+        // TODO: optimize
+        foreach ($read as $i => $sock) {
+            if (EngineState::$paused_sockets[$sock] ?? null) {
+                unset($read[$i]);
+            }
+        }
+        foreach ($write as $i => $sock) {
+            if (EngineState::$paused_sockets[$sock] ?? null) {
+                unset($write[$i]);
+            }
+        }
 
         $to_resume = [];
         while (!EngineState::$pending_sleep_heap->isEmpty()) {

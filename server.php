@@ -19,76 +19,18 @@ class Session {
         public $name,
         public $sock,
         public ServerState $state,
+        public $user = null,
         public $writech = new sync\Chan(),
     ) {}
 
     function reader() {
         echo "{$this->name} starting reader\n";
 
-        $user = null;
-
         try {
-            $username = $password = $nick = null;
-
-            while (true) {
-                if ($username && $nick) {
-                    break;
-                }
-
-                $msg = $this->read_msg();
-                switch ($msg->cmd) {
-                    case 'USER':
-                        //      Command: USER
-                        //   Parameters: <username> 0 * <realname>
-                        $username = $msg->params[0];
-                        break;
-                    case 'PASS':
-                        //      Command: PASS
-                        //   Parameters: <password>
-                        $password = $msg->params[0];
-                        break;
-                    case 'NICK':
-                        //      Command: NICK
-                        //   Parameters: <nickname>
-                        $nick = $msg->params[0];
-                        break;
-                    case 'CAP':
-                        // TODO: implement proper capability negotiation
-                        // ignore for now
-                        break;
-                    default:
-                        throw new \RuntimeException(sprintf(
-                            'invalid cmd, expected one of %s, got: %s',
-                            '[USER, PASS, NICK, CAP]',
-                            $msg->cmd
-                        ));
-                }
+            $user = $this->user;
+            if (!$user) {
+                $user = $this->user = $this->handshake();
             }
-
-            $user = $this->state->register($username, $nick, $this);
-
-            // TODO: NICK: check if nick is available, adjust it if not
-            // TODO: NICK: allow nick to change
-            // TODO: USER: implement realname
-            // TODO: various numeric error replies for all of these
-
-            // https://modern.ircdocs.horse/#rplwelcome-001
-            $this->write_msg('001', [$user->nick, "Welcome to the rage Network, {$user->nick}"]);
-            $this->write_msg('002', [$user->nick, sprintf("Your host is rage, running version 0.0.1")]);
-            $this->write_msg('003', [$user->nick, "This server was created in the future"]);
-            $this->write_msg('004', [$user->nick, 'rage', '0.0.1', 'o', 'o']);
-            $this->write_msg('251', [$user->nick, "There are 0 users and 0 invisible on 1 servers"]);
-            $this->write_msg('255', [$user->nick, "I have 0 clients and 1 servers"]);
-
-            // LUSERS
-            $this->write_msg('005', [$user->nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
-
-            // MOTD
-            $this->write_msg('375', [$user->nick, '- <server> Message of the day - ']);
-            $this->write_msg('372', [$user->nick, 'moin']);
-            $this->write_msg('376', [$user->nick, 'End of /MOTD command.']);
-
-            // TODO: unimplemented: OPER
 
             while (true) {
                 $msg = $this->read_msg();
@@ -221,6 +163,69 @@ class Session {
         }
     }
 
+    function handshake() {
+        $username = $password = $nick = null;
+        while (true) {
+            if ($username && $nick) {
+                break;
+            }
+
+            $msg = $this->read_msg();
+            switch ($msg->cmd) {
+                case 'USER':
+                    //      Command: USER
+                    //   Parameters: <username> 0 * <realname>
+                    $username = $msg->params[0];
+                    break;
+                case 'PASS':
+                    //      Command: PASS
+                    //   Parameters: <password>
+                    $password = $msg->params[0];
+                    break;
+                case 'NICK':
+                    //      Command: NICK
+                    //   Parameters: <nickname>
+                    $nick = $msg->params[0];
+                    break;
+                case 'CAP':
+                    // TODO: implement proper capability negotiation
+                    // ignore for now
+                    break;
+                default:
+                    throw new \RuntimeException(sprintf(
+                        'invalid cmd, expected one of %s, got: %s',
+                        '[USER, PASS, NICK, CAP]',
+                        $msg->cmd
+                    ));
+            }
+        }
+
+        $user = $this->state->register($username, $nick, $this);
+
+        // TODO: NICK: check if nick is available, adjust it if not
+        // TODO: NICK: allow nick to change
+        // TODO: USER: implement realname
+        // TODO: various numeric error replies for all of these
+
+        // https://modern.ircdocs.horse/#rplwelcome-001
+        $this->write_msg('001', [$user->nick, "Welcome to the rage Network, {$user->nick}"]);
+        $this->write_msg('002', [$user->nick, sprintf("Your host is rage, running version 0.0.1")]);
+        $this->write_msg('003', [$user->nick, "This server was created in the future"]);
+        $this->write_msg('004', [$user->nick, 'rage', '0.0.1', 'o', 'o']);
+        $this->write_msg('251', [$user->nick, "There are 0 users and 0 invisible on 1 servers"]);
+        $this->write_msg('255', [$user->nick, "I have 0 clients and 1 servers"]);
+
+        // LUSERS
+        $this->write_msg('005', [$user->nick, 'CHANTYPES=#', 'PREFIX=(o)@', 'are supported by this server']);
+
+        // MOTD
+        $this->write_msg('375', [$user->nick, '- <server> Message of the day - ']);
+        $this->write_msg('372', [$user->nick, 'moin']);
+        $this->write_msg('376', [$user->nick, 'End of /MOTD command.']);
+
+        return $user;
+    }
+
     function read_msg() {
         return parse_msg($this->read_line());
     }
@@ -233,7 +238,7 @@ class Session {
         $len = CLIENT_READ_SIZE;
         while (!str_contains($this->readbuf, CLIENT_LINE_FEED)) {
             $buf = null;
-            $n = read($this->sock, $buf, $len);
+            $n = recv($this->sock, $buf, $len);
 
             if ($n === false) {
                 throw new \RuntimeException(socket_strerror(socket_last_error()));

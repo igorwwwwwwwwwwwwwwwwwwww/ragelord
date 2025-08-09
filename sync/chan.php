@@ -3,7 +3,7 @@
 namespace ragelord\sync;
 
 use Fiber;
-use function ragelord\read;
+use function ragelord\recv;
 use function ragelord\write;
 
 // TODO: buffered, i.e. block on max size or exception.
@@ -64,7 +64,7 @@ class Chan implements \IteratorAggregate {
     function send($msg) {
         while (count($this->buf) > $this->size) {
             $buf = null;
-            read($this->sock_send, $buf, 1);
+            recv($this->sock_send, $buf, 1);
         }
 
         $this->buf[] = $msg;
@@ -78,7 +78,7 @@ class Chan implements \IteratorAggregate {
 
         while (count($this->buf) === 0) {
             $buf = null;
-            read($this->sock_recv, $buf, 1);
+            recv($this->sock_recv, $buf, 1);
         }
 
         $val = array_shift($this->buf);
