@@ -25,20 +25,12 @@ function send_sockets(string $socket_path, array $socket_tag_pairs, $context = n
             throw new RuntimeException("Failed to export Socket to stream for FD $fd");
         }
 
-        $stream_resources[] = $stream;
+        $stream_resources[] = $socket_obj;
         $tags[] = $tag;
     }
 
     $sock = socket_create(AF_UNIX, SOCK_STREAM, 0);
-    if ($sock === false) {
-        throw new RuntimeException("socket_create() failed: " . socket_strerror(socket_last_error()));
-    }
-
-    if (!socket_connect($sock, $socket_path)) {
-        $error = socket_strerror(socket_last_error($sock));
-        socket_close($sock);
-        throw new RuntimeException("socket_connect() failed: $error");
-    }
+    socket_connect($sock, $socket_path);
 
     // Step 1: Send context as a separate message
     $context_json = json_encode($context);
@@ -48,12 +40,7 @@ function send_sockets(string $socket_path, array $socket_tag_pairs, $context = n
     $packed_data = pack('V', $context_len) . $context_json;
 
     // Send context message first
-    $result = socket_sendmsg($sock, ['iov' => [$packed_data]]);
-    if ($result === false) {
-        $error = socket_strerror(socket_last_error($sock));
-        socket_close($sock);
-        throw new RuntimeException("socket_sendmsg() failed for context: $error");
-    }
+    socket_sendmsg($sock, ['iov' => [$packed_data]]);
 
     // Step 2: Send tags with file descriptors
     $tags_json = json_encode($tags);
@@ -62,21 +49,16 @@ function send_sockets(string $socket_path, array $socket_tag_pairs, $context = n
     // Pack length as 4 bytes little-endian, then copy JSON data
     $packed_tags_data = pack('V', $tags_len) . $tags_json;
 
-    // Send tags and file descriptors using pure PHP socket_sendmsg
-    $result = socket_sendmsg($sock, [
+    var_dump('sendmsg', $stream_resources);
+
+    socket_sendmsg($sock, [
         'iov' => [$packed_tags_data],
         'control' => [[
             'level' => SOL_SOCKET,
             'type' => SCM_RIGHTS,
-            'data' => $stream_resources
-        ]]
+            'data' => $stream_resources,
+        ]],
     ], 0);
-
-    if ($result === false) {
-        $error = socket_strerror(socket_last_error($sock));
-        socket_close($sock);
-        throw new RuntimeException("socket_sendmsg() failed for tags and fds: $error");
-    }
 
     socket_close($sock);
     return true;
@@ -91,22 +73,11 @@ function receive_sockets(string $socket_path): array {
 
     // Remove existing socket file
     if (file_exists($socket_path)) {
-        if (!unlink($socket_path)) {
-            throw new RuntimeException("Failed to remove existing socket file: $socket_path");
-        }
+        unlink($socket_path);
     }
 
-    if (!socket_bind($listen_sock, $socket_path)) {
-        $error = socket_strerror(socket_last_error($listen_sock));
-        socket_close($listen_sock);
-        throw new RuntimeException("socket_bind() failed: $error");
-    }
-
-    if (!socket_listen($listen_sock, 1)) {
-        $error = socket_strerror(socket_last_error($listen_sock));
-        socket_close($listen_sock);
-        throw new RuntimeException("socket_listen() failed: $error");
-    }
+    socket_bind($listen_sock, $socket_path);
+    socket_listen($listen_sock, 1);
 
     $client_sock = socket_accept($listen_sock);
     if ($client_sock === false) {
@@ -130,6 +101,7 @@ function receive_sockets(string $socket_path): array {
     }
 
     if (strlen($peek_data) < 4) {
+        // TODO: do this in finally
         socket_close($client_sock);
         socket_close($listen_sock);
         if (file_exists($socket_path)) {
@@ -246,8 +218,17 @@ function receive_sockets(string $socket_path): array {
         throw new RuntimeException("Mismatch between number of tags (" . count($tags) . ") and file descriptors ($fd_count)");
     }
 
+    var_dump('recvmsg', $data['control'][0]['data']);
+
     $sock_tag_pairs = [];
-    foreach ($data['control'][0]['data'] as $i => $sock) {
+    foreach ($data['control'][0]['data'] as $i => $stream) {
+        // this is needed because socket_import_stream() claims the received stream is of type STDIO
+        // $meta = stream_get_meta_data($stream);
+        // $fd = intval($meta['stream_id'] ?? $stream);
+        // $fd_stream = fopen("php://fd/$fd", 'r');
+        // $sock  = socket_import_stream($fd_stream);
+
+        $sock = socket_import_stream($stream);
         $sock_tag_pairs[] = [$sock, $tags[$i]];
     }
 
