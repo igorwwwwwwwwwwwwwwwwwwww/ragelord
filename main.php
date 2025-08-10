@@ -6,7 +6,7 @@ require 'socket.php';
 require 'log/log.php';
 require 'state.php';
 require 'proto.php';
-require 'server.php';
+require 'session.php';
 require 'sched.php';
 require 'sync/chan.php';
 require 'passfd/passfd.php';
