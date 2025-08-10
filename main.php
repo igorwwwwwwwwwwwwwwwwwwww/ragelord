@@ -132,12 +132,6 @@ go(function () use ($sigbuf) {
         // we could actually inject these into the log stream as a custom
         // record type. perhaps added at the very end. sort of like aux data.
 
-        // TODO: handle this more cleanly. actually maybe we transfer _only_ the log
-        //       and init with an empty state.
-        // we do not replay the log against the state, we replay it against the
-        //   _clients_ who then modify the state. but we currently do not have a
-        //   source of truth for the client sessions. they are kinda sorta in a
-        //   weakmap in the state.
         $state = new ServerState();
         $state->replay($log);
 
