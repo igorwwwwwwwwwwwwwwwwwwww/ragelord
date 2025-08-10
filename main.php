@@ -12,8 +12,8 @@ require 'passfd/passfd.php';
 require 'signal.php';
 require 'color.php';
 
-const UPGRADE_LOCK_FILE = __DIR__.'/upgrade.lock';
-const UPGRADE_SOCK_FILE = __DIR__.'/upgrade.sock';
+const UPGRADE_LOCK_FILE = '/tmp/ragelord.upgrade.lock';
+const UPGRADE_SOCK_FILE = '/tmp/ragelord.upgrade.sock';
 
 class UpgradeInitiatedException extends \Exception {}
 
@@ -61,11 +61,13 @@ go(function () use ($sigbuf) {
         unlink(UPGRADE_SOCK_FILE);
     }
     if (file_exists(UPGRADE_LOCK_FILE)) {
-        $fp = fopen(UPGRADE_LOCK_FILE, 'r+');
+        $fp = fopen(UPGRADE_LOCK_FILE, 'r');
         if (flock($fp, LOCK_EX | LOCK_NB)) {
             // lock file exists but is not held, let's delete it
             unlink(UPGRADE_LOCK_FILE);
-            unlink(UPGRADE_SOCK_FILE);
+            if (file_exists(UPGRADE_SOCK_FILE)) {
+                unlink(UPGRADE_SOCK_FILE);
+            }
         }
         fclose($fp);
         $fp = null;
@@ -79,6 +81,15 @@ go(function () use ($sigbuf) {
 
         $upgrade_client_sock = connect_unix(UPGRADE_SOCK_FILE);
         [$sockets, $context] = passfd\receive_sockets($upgrade_client_sock);
+        socket_close($upgrade_client_sock);
+
+        // TODO: macos introduces second delay here?
+        //       kqueue may handle this better.
+
+        if (debug_enabled('upgrade')) {
+            printf(Color::YELLOW->colorize(sprintf("sockets: %s\n", count($sockets))));
+            printf(Color::YELLOW->colorize(sprintf("context: %s\n", $context)));
+        }
 
         $upgrade_sock = null;
         $server_socks = [];
@@ -96,18 +107,42 @@ go(function () use ($sigbuf) {
                     break;
                 case 'client':
                     $client_socks[spl_object_id($sock)] = $sock;
-                    // TODO: set up sessions
                     break;
             }
         }
-        // seed state from context
+
+        // TODO: unserialize sessions here as well
+        //       so that we only need to perform the socket
+        //       mapping there.
+        //
+        // we could also consider implementing more of an erlang style
+        //   upgrade flow where everything is in state machine and msg
+        //   receive. tricky for local state though since we likely
+        //   cannot migrate the fiber state to the new process.
         $state = unserialize($context, ['allowed_classes' => [
             'ragelord\ServerState',
             'ragelord\Channel',
             'ragelord\User',
         ]]);
 
-        // TODO: create sessions, register them in the state
+        foreach ($client_socks as $client_sock) {
+            $user = $state->socket_nick[socket_name($client_sock)] ?? null;
+            if (!$user) {
+                // user was caught in registration flow
+                // sacrifice.
+                socket_close($client_sock);
+                continue;
+            }
+            $sess = new Session(
+                socket_name($client_sock),
+                $client_sock,
+                $state,
+                $user,
+            );
+            $state->register($user, $sess);
+            go(fn () => $sess->reader());
+            go(fn () => $sess->writer());
+        }
     } else {
         // clean init
         if (debug_enabled('upgrade')) {
@@ -121,9 +156,9 @@ go(function () use ($sigbuf) {
 
         $upgrade_sock = listen_unix(UPGRADE_SOCK_FILE);
         $server_socks = [
-            listen4('127.0.0.1', 6667),
-            listen6('::1', 6667),
-            // listen4('0.0.0.0', 6667),
+            // listen4('127.0.0.1', 6667),
+            // listen6('::1', 6667),
+            listen4('0.0.0.0', 6667),
         ];
         $client_socks = new \WeakMap();
         $state = new ServerState();
@@ -131,13 +166,7 @@ go(function () use ($sigbuf) {
 
     // upgrade: send
     $server_fibers[] = go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $server_socks, $client_socks, $state) {
-        while (true) {
-            // TODO: why does accept fail here sometimes?
-            $upgrade_client_sock = accept($upgrade_sock);
-            if ($upgrade_client_sock) {
-                break;
-            }
-        }
+        $upgrade_client_sock = accept_debounce($upgrade_sock);
 
         if (debug_enabled('upgrade')) {
             printf(Color::YELLOW->colorize("upgrade: send\n"));
@@ -171,7 +200,7 @@ go(function () use ($sigbuf) {
         $server_fibers[] = go(function () use ($server_sock, $state) {
             try {
                 while (true) {
-                    $client_sock = accept($server_sock);
+                    $client_sock = accept_debounce($server_sock);
                     $client_socks[spl_object_id($client_sock)] = $client_sock;
                     go(function () use ($state, $client_sock) {
                         $name = socket_name($client_sock);

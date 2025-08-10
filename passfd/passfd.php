@@ -23,7 +23,7 @@ function encode_uint32($num) {
     return pack('V', $num);
 }
 
-function send_sockets($upgrade_sock, array $socket_tag_pairs, $context_str = ''): bool {
+function send_sockets($upgrade_sock, $socket_tag_pairs, $context_str = '') {
     if (count($socket_tag_pairs) === 0) {
         throw new InvalidArgumentException("socket-tag pairs cannot be empty");
     }
@@ -63,18 +63,15 @@ function send_sockets($upgrade_sock, array $socket_tag_pairs, $context_str = '')
             'data' => $stream_resources,
         ]],
     ];
-    socket_sendmsg($upgrade_sock, $msg, 0);
+    sendmsg($upgrade_sock, $msg, 0);
 
     if (debug_enabled('passfd')) {
         printf("passfd: sendmsg\n");
         var_dump($msg);
     }
-
-    socket_close($upgrade_sock);
-    return true;
 }
 
-function receive_sockets($client_sock): array {
+function receive_sockets($client_sock) {
     // maximum context+tags: 4k
     // maximum fd count: 256
     // TODO: validate on send

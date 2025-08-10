@@ -156,6 +156,7 @@ class Session {
                 $this->close();
             }
         } finally {
+            // TODO: suppress this on upgrade, e.g. via UpgradeInitiatedException
             echo "{$this->name} client terminated\n";
             if ($user) {
                 $this->state->unregister($user);

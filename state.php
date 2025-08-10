@@ -65,13 +65,14 @@ class ServerState {
     public $users = [];
     public $channels = [];
     public \WeakMap $sessions;
+    public $socket_nick = []; // used for reconstructing sessions after upgrade passfd
 
     function __construct() {
         $this->sessions = new \WeakMap();
     }
 
     function __sleep() {
-        return ['users', 'channels'];
+        return ['users', 'channels', 'socket_nick'];
     }
 
     function __wakeup() {
@@ -85,7 +86,8 @@ class ServerState {
         $user = new User($username, $nick);
         $this->users[$nick] = $user;
         $this->sessions[$user] = $sess;
-        return $this->users[$nick];
+        $this->socket_nick[socket_name($sess->sock)] = $user->nick;
+        return $user;
     }
 
     function unregister($user) {
@@ -100,13 +102,20 @@ class ServerState {
         }
         unset($this->users[$user->nick]);
         unset($this->sessions[$user]);
+
+        // TODO: optimize via reverse index
+        foreach ($this->socket_nick as $socket_name => $nick) {
+            if ($nick === $user->nick) {
+                unset($this->socket_nick[$socket_name]);
+            }
+        }
     }
 
-    function nick($user, $newNick) {
-        if (isset($this->users[$newNick])) {
+    function nick($user, $new_nick) {
+        if (isset($this->users[$new_nick])) {
             throw new \RuntimeException('nick already exists');
         }
-        $this->users[$newNick] = $user;
+        $this->users[$new_nick] = $user;
         unset($this->users[$user->nick]);
 
         // no bookkeeping in sessions needed because it refers to the
@@ -114,15 +123,15 @@ class ServerState {
 
         foreach ($this->channels as $channel) {
             if (isset($channel->members[$user->nick])) {
-                $channel->members[$newNick] = $user;
+                $channel->members[$new_nick] = $user;
                 unset($channel->members[$user->nick]);
             }
         }
 
-        foreach ($this->users as $otherUser) {
-            $this->sessions[$otherUser]->write_msg('NICK', [$newNick], $user->nick);
+        foreach ($this->users as $other_user) {
+            $this->sessions[$other_user]->write_msg('NICK', [$new_nick], $user->nick);
         }
-        $user->nick = $newNick;
+        $user->nick = $new_nick;
     }
 
     function join($user, $chan_name) {
