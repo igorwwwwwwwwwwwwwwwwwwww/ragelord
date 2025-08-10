@@ -106,7 +106,7 @@ go(function () use ($sigbuf) {
                     $server_socks[] = $sock;
                     break;
                 case 'client':
-                    $client_socks[spl_object_id($sock)] = $sock;
+                    $client_socks[$sock] = $sock;
                     break;
             }
         }
@@ -126,20 +126,21 @@ go(function () use ($sigbuf) {
         ]]);
 
         foreach ($client_socks as $client_sock) {
-            $user = $state->socket_nick[socket_name($client_sock)] ?? null;
-            if (!$user) {
+            $nick = $state->socket_nick[socket_name($client_sock)] ?? null;
+            if (!$nick) {
                 // user was caught in registration flow
                 // sacrifice.
                 socket_close($client_sock);
                 continue;
             }
+            $user = $state->users[$nick];
             $sess = new Session(
                 socket_name($client_sock),
                 $client_sock,
                 $state,
                 $user,
             );
-            $state->register($user, $sess);
+            $state->register_existing_session($user->nick, $sess);
             go(fn () => $sess->reader());
             go(fn () => $sess->writer());
         }
@@ -197,11 +198,11 @@ go(function () use ($sigbuf) {
     });
 
     foreach ($server_socks as $server_sock) {
-        $server_fibers[] = go(function () use ($server_sock, $state) {
+        $server_fibers[] = go(function () use ($server_sock, $client_socks, $state) {
             try {
                 while (true) {
                     $client_sock = accept_debounce($server_sock);
-                    $client_socks[spl_object_id($client_sock)] = $client_sock;
+                    $client_socks[$client_sock] = $client_sock;
                     go(function () use ($state, $client_sock) {
                         $name = socket_name($client_sock);
                         $sess = new Session($name, $client_sock, $state);

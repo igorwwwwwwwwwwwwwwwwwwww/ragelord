@@ -79,6 +79,15 @@ class ServerState {
         $this->sessions = new \WeakMap();
     }
 
+    // we do this during upgrade
+    function register_existing_session($nick, $sess) {
+        if (!isset($this->users[$nick])) {
+            throw new \RuntimeException("cannot register session for missing user $nick");
+        }
+        $user = $this->users[$nick];
+        $this->sessions[$user] = $sess;
+    }
+
     function register($username, $nick, $sess) {
         if (isset($this->users[$nick])) {
             throw new \RuntimeException('nick already exists');
