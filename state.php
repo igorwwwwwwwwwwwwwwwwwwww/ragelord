@@ -62,12 +62,14 @@ class Channel {
 }
 
 class ServerState {
-    public $users = [];
-    public $channels = [];
     public \WeakMap $sessions;
-    public $socket_nick = []; // used for reconstructing sessions after upgrade passfd
 
-    function __construct() {
+    function __construct(
+        public $users = [],
+        public $channels = [],
+        public $socket_nick = [], // used for reconstructing sessions after upgrade passfd
+
+    ) {
         $this->sessions = new \WeakMap();
     }
 
@@ -201,6 +203,48 @@ class ServerState {
                 continue;
             }
             $this->sessions[$member]->write_msg('PRIVMSG', [$chan_name, $text], $user->nick);
+        }
+    }
+
+    function replay(log\Log $log) {
+        foreach ($log->records as $record) {
+            // find session, invoke.
+            // perhaps we need a separate SessionState or such which can do this
+
+            // NOTE: we need to blackhole all writes (write_msg) while we replay.
+            //       we don't even need a writer fiber active yet.
+            //
+            // the process would be:
+            // - on accept
+            //   - find accept call to unblock (do we need a fake ReplaySocket or abstraction?)
+            //   - create session
+            //   - start reader in log replay mode
+            //   - configure write_msg to blackhole
+            // - on msg
+            //   - find session to unblock
+            //   - unblock reader fiber
+            // - on close
+            //   - find session
+            //   - close it
+            //
+            // then, after log has been replayed, we should have an up-to-date state,
+            //   and an up-to-date set of sessions.
+            // we can now upgrade these sessions to real sockets. then we can start
+            //   the writer fiber. turn off log replay mode.
+            // 🚀 FULL STEAM AHEAD!
+
+            // thinking about this a bit more, we might be able to do this entirely
+            //   at the io abstraction layer. instrument accept, read, write.
+            //   if we get a ReplaySocket, we skip the event loop, we still suspend,
+            //   but we will get resumed by the replayer instead of the event loop.
+            // once replay is done do we upgrade the sockets in place.
+            //   we can even signal the calls blocked on a fake operation that the
+            //   socket upgrade happened via throw. each operation catches, extracts
+            //   the real socket (maybe even from the exception itself), and then
+            //   just falls back to its normal behaviour.
+
+            // NOTE: we may need to add trailing \r\n when writing messages to
+            // the fake socket on replay.
         }
     }
 }

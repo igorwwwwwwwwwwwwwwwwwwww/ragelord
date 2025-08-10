@@ -19,6 +19,7 @@ class Session {
         public $name,
         public $sock,
         public ServerState $state,
+        public log\Log $log,
         public $user = null,
         public $writech = new sync\Chan(),
     ) {}
@@ -228,7 +229,20 @@ class Session {
     }
 
     function read_msg() {
-        return parse_msg($this->read_line());
+        // if replaying log, return from log.
+        // actually, we probably want to do a blocking call
+        // here since we will suspend once log has reached
+        // this session.
+        //
+        // in fact the same goes for accept() / session creation
+        // and shutdown.
+
+        $msg = parse_msg($this->read_line());
+        if (!in_array($msg->type, ['PING', 'PRIVMSG'])) {
+            // we only log state changes
+            $this->log->append(log\RecordType::CLIENT_MESSAGE, $this->name, (string) $msg);
+        }
+        return $msg;
     }
 
     function read_line() {

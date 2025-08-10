@@ -3,6 +3,7 @@
 namespace ragelord;
 
 require 'socket.php';
+require 'log/log.php';
 require 'state.php';
 require 'proto.php';
 require 'server.php';
@@ -119,11 +120,26 @@ go(function () use ($sigbuf) {
         //   upgrade flow where everything is in state machine and msg
         //   receive. tricky for local state though since we likely
         //   cannot migrate the fiber state to the new process.
-        $state = unserialize($context, ['allowed_classes' => [
-            'ragelord\ServerState',
-            'ragelord\Channel',
-            'ragelord\User',
+        $log = unserialize($context, ['allowed_classes' => [
+            'ragelord\log\Log',
+            'ragelord\log\LogRecord',
         ]]);
+
+        // TODO: check for __PHP_Incomplete_Class
+
+        // TODO: handle pending reads/writes. they are no in the log yet.
+        //       can we transfer those via context?
+        // we could actually inject these into the log stream as a custom
+        // record type. perhaps added at the very end. sort of like aux data.
+
+        // TODO: handle this more cleanly. actually maybe we transfer _only_ the log
+        //       and init with an empty state.
+        // we do not replay the log against the state, we replay it against the
+        //   _clients_ who then modify the state. but we currently do not have a
+        //   source of truth for the client sessions. they are kinda sorta in a
+        //   weakmap in the state.
+        $state = new ServerState();
+        $state->replay($log);
 
         foreach ($client_socks as $client_sock) {
             $nick = $state->socket_nick[socket_name($client_sock)] ?? null;
@@ -139,6 +155,7 @@ go(function () use ($sigbuf) {
                 $client_sock,
                 $state,
                 $user,
+                $log,
             );
             $state->register_existing_session($user->nick, $sess);
             go(fn () => $sess->reader());
@@ -162,11 +179,12 @@ go(function () use ($sigbuf) {
             listen4('0.0.0.0', 6667),
         ];
         $client_socks = new \WeakMap();
-        $state = new ServerState();
+        $log = new log\Log();
+        $state = new ServerState($log);
     }
 
     // upgrade: send
-    $server_fibers[] = go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $server_socks, $client_socks, $state) {
+    $server_fibers[] = go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $server_socks, $client_socks, $log) {
         $upgrade_client_sock = accept_debounce($upgrade_sock);
 
         if (debug_enabled('upgrade')) {
@@ -192,21 +210,22 @@ go(function () use ($sigbuf) {
         }
 
         // TODO: encode state version for compatibility
-        $context = serialize($state);
+        $context = serialize($log);
 
         passfd\send_sockets($upgrade_client_sock, $sockets, $context);
         exit(0); // TODO: make this exit cleanly
     });
 
     foreach ($server_socks as $server_sock) {
-        $server_fibers[] = go(function () use ($server_sock, $client_socks, $state) {
+        $server_fibers[] = go(function () use ($server_sock, $client_socks, $state, $log) {
             try {
                 while (true) {
-                    $client_sock = accept_debounce($server_sock);
+                    $client_sock = accept_log_aware($server_sock);
                     $client_socks[$client_sock] = $client_sock;
-                    go(function () use ($state, $client_sock) {
+
+                    go(function () use ($client_sock, $state, $log) {
                         $name = socket_name($client_sock);
-                        $sess = new Session($name, $client_sock, $state);
+                        $sess = new Session($name, $client_sock, $state, $log);
                         go(fn () => $sess->reader());
                         go(fn () => $sess->writer());
                     });
