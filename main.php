@@ -177,8 +177,9 @@ go(function () use ($sigbuf) {
         foreach ($server_socks as $server_sock) {
             pause($server_sock);
         }
-
-        // TODO: pause client sockets
+        foreach ($client_socks as $client_sock) {
+            pause($client_sock);
+        }
 
         $sockets = [];
         $sockets[] = [$upgrade_lock, 'upgrade_lock'];
