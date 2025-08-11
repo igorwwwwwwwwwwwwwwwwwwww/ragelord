@@ -11,6 +11,9 @@ const CLIENT_LINE_FEED = "\r\n";
 const CLIENT_MAX_WRITE_BUF_SIZE = 8192;
 
 class Session {
+    public $reader_fiber;
+    public $writer_fiber;
+
     public $closing = false;
     public $closed = false;
     public $readbuf = '';
@@ -19,19 +22,21 @@ class Session {
         public $name,
         public $sock,
         public ServerState $state,
-        public log\Log $log,
-        public $user = null,
+        public $replay = false,
         public $writech = new sync\Chan(),
     ) {}
+
+    function run() {
+        $this->reader_fiber = go(fn () => $this->reader());
+        $this->writer_fiber = go(fn () => $this->writer());
+    }
 
     function reader() {
         echo "{$this->name} starting reader\n";
 
+        $user = null;
         try {
-            $user = $this->user;
-            if (!$user) {
-                $user = $this->user = $this->handshake();
-            }
+            $user = $this->handshake();
 
             while (true) {
                 $msg = $this->read_msg();
@@ -157,7 +162,6 @@ class Session {
                 $this->close();
             }
         } finally {
-            // TODO: suppress this on upgrade, e.g. via UpgradeInitiatedException
             echo "{$this->name} client terminated\n";
             if ($user) {
                 $this->state->unregister($user);
@@ -229,18 +233,14 @@ class Session {
     }
 
     function read_msg() {
-        // if replaying log, return from log.
-        // actually, we probably want to do a blocking call
-        // here since we will suspend once log has reached
-        // this session.
-        //
-        // in fact the same goes for accept() / session creation
-        // and shutdown.
+        if ($this->sock instanceof LogReplaySocket) {
+            return $this->sock->read();
+        }
 
         $msg = parse_msg($this->read_line());
-        if (!in_array($msg->type, ['PING', 'PRIVMSG'])) {
-            // we only log state changes
-            $this->log->append(log\RecordType::CLIENT_MESSAGE, $this->name, (string) $msg);
+        if (!in_array($msg->cmd, ['PING', 'PRIVMSG'])) {
+            // TODO: support multiple loggers (e.g. replication) and filter messages there
+            log\LogState::$log->append(log\RecordType::CLIENT_READ_MSG, client_socket_name($this->sock), $msg);
         }
         return $msg;
     }
@@ -293,6 +293,8 @@ class Session {
 
         if (!$this->closed) {
             $this->closed = true;
+            // TODO: filter this specifically for handover
+            // log\LogState::$log->append(log\RecordType::CLIENT_CLOSE, client_socket_name($this->sock));
             socket_close($this->sock);
         }
 
@@ -300,18 +302,24 @@ class Session {
     }
 
     function write_msg($cmd, $params, $source = SERVER_SOURCE) {
-        $this->write_async(new Message(
+        $this->write_msg_async(new Message(
             $cmd,
             $params,
             $source,
         ));
     }
 
-    function write_async($data) {
+    function write_msg_async($msg) {
+        // TODO: handle transition to real socket
+        if ($this->sock instanceof LogReplaySocket) {
+            return $this->sock->write($msg);
+        }
+
+        log\LogState::$log->append(log\RecordType::CLIENT_WRITE_MSG, client_socket_name($this->sock), $msg);
         if ($this->closed) {
             throw new \RuntimeException('cannot write to closed socket');
         }
-        $this->writech->send($data . CLIENT_LINE_FEED);
+        $this->writech->send($msg . CLIENT_LINE_FEED);
     }
 
     function write($data) {
@@ -355,5 +363,7 @@ class Session {
         $this->closed = true;
         socket_close($this->sock);
         $this->writech->close();
+
+        log\LogState::$log->append(log\RecordType::CLIENT_CLOSE, client_socket_name($this->sock));
     }
 }

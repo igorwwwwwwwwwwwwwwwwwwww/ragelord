@@ -21,7 +21,6 @@ class EngineState {
     public static $pending_write_waiter = [];
 
     public static \SplMinHeap $pending_sleep_heap;
-
 }
 EngineState::$fibers = new \WeakMap();
 EngineState::$paused_sockets = new \WeakMap();

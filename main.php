@@ -6,6 +6,7 @@ require 'socket.php';
 require 'log/log.php';
 require 'state.php';
 require 'proto.php';
+require 'server.php';
 require 'session.php';
 require 'sched.php';
 require 'sync/chan.php';
@@ -15,8 +16,6 @@ require 'color.php';
 
 const UPGRADE_LOCK_FILE = '/tmp/ragelord.upgrade.lock';
 const UPGRADE_SOCK_FILE = '/tmp/ragelord.upgrade.sock';
-
-class UpgradeInitiatedException extends \Exception {}
 
 set_error_handler(exception_error_handler(...));
 
@@ -32,28 +31,26 @@ $sigbuf->bottom_half();
 
 // TODO: implement gracceful termination
 go(function () use ($sigbuf) {
-    $server_fibers = [];
+    $servers = [];
 
-    $sigbuf_fiber = go(function () use ($sigbuf, &$server_fibers) {
-        try {
-            foreach ($sigbuf->ch as $signo) {
-                printf("received signal: %s\n", signo_name($signo));
-                if (defined('SIGINFO') && $signo === SIGINFO) {
-                    engine_print_backtrace();
-                    debug_print_backtrace();
-                    continue;
-                }
-                switch ($signo) {
-                    case SIGINT: // fallthru
-                    case SIGTERM:
-                        foreach ($server_fibers as $fiber) {
-                            $fiber->throw(new \RuntimeException(sprintf("received signal: %s\n", signo_name($signo))));
-                        }
-                        return;
-                }
+    $sigbuf_fiber = go(function () use ($sigbuf, &$servers) {
+        foreach ($sigbuf->ch as $signo) {
+            printf("received signal: %s\n", signo_name($signo));
+            if (defined('SIGINFO') && $signo === SIGINFO) {
+                engine_print_backtrace();
+                debug_print_backtrace();
+                continue;
             }
-        } catch (UpgradeInitiatedException $e) {
-            // noop
+            switch ($signo) {
+                case SIGINT: // fallthru
+                case SIGTERM:
+                    foreach ($servers as $server) {
+                        $servers->shutdown();
+                    }
+                    // TODO: this is currently broken, not shutting down properly, so we force an exit
+                    exit(1);
+                    return;
+            }
         }
     });
 
@@ -92,9 +89,10 @@ go(function () use ($sigbuf) {
             printf(Color::YELLOW->colorize(sprintf("context: %s\n", $context)));
         }
 
-        $upgrade_sock = null;
+        $replay = true;
+
         $server_socks = [];
-        $client_socks = new \WeakMap();
+        $client_socks = [];
 
         foreach ($sockets as [$sock, $tag]) {
             switch ($tag) {
@@ -107,20 +105,20 @@ go(function () use ($sigbuf) {
                     $server_socks[] = $sock;
                     break;
                 case 'client':
-                    $client_socks[$sock] = $sock;
+                    $client_socks[] = $sock;
                     break;
             }
         }
 
-        // TODO: unserialize sessions here as well
-        //       so that we only need to perform the socket
-        //       mapping there.
-        //
-        // we could also consider implementing more of an erlang style
-        //   upgrade flow where everything is in state machine and msg
-        //   receive. tricky for local state though since we likely
-        //   cannot migrate the fiber state to the new process.
-        $log = unserialize($context, ['allowed_classes' => [
+        // TODO: storing the log in a single recvmsg packet is not great.
+        //       we should probably instead give an indication of how much
+        //       data to read after the recvmsg and then treat _that_ as
+        //       the context. that also avoids having to worry about buffer
+        //       sizes and static string allocation.
+        //       in fact we can stream the log incrementally, which is much
+        //       better. same for if we want to send a huge snapshot.
+
+        log\LogState::$log = unserialize($context, ['allowed_classes' => [
             'ragelord\log\Log',
             'ragelord\log\LogRecord',
         ]]);
@@ -133,28 +131,6 @@ go(function () use ($sigbuf) {
         // record type. perhaps added at the very end. sort of like aux data.
 
         $state = new ServerState();
-        $state->replay($log);
-
-        foreach ($client_socks as $client_sock) {
-            $nick = $state->socket_nick[socket_name($client_sock)] ?? null;
-            if (!$nick) {
-                // user was caught in registration flow
-                // sacrifice.
-                socket_close($client_sock);
-                continue;
-            }
-            $user = $state->users[$nick];
-            $sess = new Session(
-                socket_name($client_sock),
-                $client_sock,
-                $state,
-                $user,
-                $log,
-            );
-            $state->register_existing_session($user->nick, $sess);
-            go(fn () => $sess->reader());
-            go(fn () => $sess->writer());
-        }
     } else {
         // clean init
         if (debug_enabled('upgrade')) {
@@ -166,26 +142,34 @@ go(function () use ($sigbuf) {
             throw new \RuntimeException('could not obtain upgrade lock');
         }
 
+        $replay = false;
+        $server_socks = [];
+        $client_socks = [];
+
         $upgrade_sock = listen_unix(UPGRADE_SOCK_FILE);
         $server_socks = [
             // listen4('127.0.0.1', 6667),
             // listen6('::1', 6667),
             listen4('0.0.0.0', 6667),
         ];
-        $client_socks = new \WeakMap();
-        $log = new log\Log();
-        $state = new ServerState($log);
+        $state = new ServerState();
     }
 
     // upgrade: send
-    $server_fibers[] = go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $server_socks, $client_socks, $log) {
+    go(function () use ($sigbuf_fiber, $upgrade_lock, $upgrade_sock, $servers) {
         $upgrade_client_sock = accept_debounce($upgrade_sock);
 
         if (debug_enabled('upgrade')) {
             printf(Color::YELLOW->colorize("upgrade: send\n"));
         }
 
-        $sigbuf_fiber->throw(new UpgradeInitiatedException());
+        $server_socks = [];
+        $client_socks = [];
+        foreach ($servers as $server) {
+            $server_socks[] = $server->sock;
+            $client_socks = array_merge($client_socks, $server->get_client_socks());
+        }
+
         foreach ($server_socks as $server_sock) {
             pause($server_sock);
         }
@@ -204,32 +188,25 @@ go(function () use ($sigbuf) {
         }
 
         // TODO: encode state version for compatibility
-        $context = serialize($log);
+        $context = serialize(log\LogState::$log);
+
+        if (debug_enabled('upgrade')) {
+            printf(Color::YELLOW->colorize(sprintf("sockets: %s\n", count($sockets))));
+            printf(Color::YELLOW->colorize(sprintf("context: $context\n")));
+        }
 
         passfd\send_sockets($upgrade_client_sock, $sockets, $context);
         exit(0); // TODO: make this exit cleanly
     });
 
     foreach ($server_socks as $server_sock) {
-        $server_fibers[] = go(function () use ($server_sock, $client_socks, $state, $log) {
-            try {
-                while (true) {
-                    $client_sock = accept_log_aware($server_sock);
-                    $client_socks[$client_sock] = $client_sock;
+        $server = new Server($server_sock, $state, $replay);
+        $server->run();
+        $servers[] = $server;
+    }
 
-                    go(function () use ($client_sock, $state, $log) {
-                        $name = socket_name($client_sock);
-                        $sess = new Session($name, $client_sock, $state, $log);
-                        go(fn () => $sess->reader());
-                        go(fn () => $sess->writer());
-                    });
-                }
-            } catch (UpgradeInitiatedException $e) {
-                // noop
-            } finally {
-                socket_close($server_sock);
-            }
-        });
+    if ($replay) {
+        log\replay($servers, $server_socks, $client_socks);
     }
 });
 

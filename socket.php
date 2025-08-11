@@ -55,23 +55,52 @@ function accept_debounce($listen_sock) {
     }
 }
 
-function accept_log_aware($listen_sock) {
-    // TODO: if we are replaying, block on log
-    //       we also need to know socket_getsockname
-    //       so that we know which server socket we are
-    //       listening on. the log replay needs to pick
-    //       the right one to unblock the accept call on.
-
-    $sock = accept_debounce($listen_sock);
-    $this->log->append(log\RecordType::CLIENT_ACCEPT, socket_name($client_sock));
-}
-
 // TODO: format depending on ipv4 vs ipv6
 // NOTE: changes in format here will impact upgrades (see ServerState socket_user)
-function socket_name($sock) {
+// NOTE: log records depend on this format to determine server
+function client_socket_name($sock) {
     $server_addr = $server_port = null;
     $client_addr = $client_port = null;
     socket_getsockname($sock, $server_addr, $server_port);
     socket_getpeername($sock, $client_addr, $client_port);
     return "[$server_addr]:$server_port <-> [$client_addr]:$client_port";
+}
+
+function server_socket_name($sock) {
+    $server_addr = $server_port = null;
+    socket_getsockname($sock, $server_addr, $server_port);
+    return "[$server_addr]:$server_port";
+}
+
+class LogReplaySocket {
+    function __construct(
+        public $name,
+        public $sock = null,
+        public $fiber_read = null,
+        public $fiber_write = null,
+    ) {}
+
+    function read() {
+        $this->fiber_read = Fiber::getCurrent();
+        return Fiber::suspend();
+    }
+
+    function resume_read($val) {
+        if (!$this->fiber_read) {
+            throw new \RuntimeException('cannot deliver read without a waiting reader');
+        }
+        $this->fiber_read->resume($val);
+    }
+
+    function write($msg) {
+        $this->fiber_write = Fiber::getCurrent();
+        return Fiber::suspend();
+    }
+
+    function resume_write() {
+        if (!$this->fiber_write) {
+            throw new \RuntimeException('cannot resume write without a waiting writer');
+        }
+        $this->fiber_write->resume();
+    }
 }
